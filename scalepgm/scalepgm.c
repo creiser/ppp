@@ -158,15 +158,26 @@ int min(int a, int b)
     return a > b ? b : a;
 }
 
-#define n_min 95
-#define n_max 180
-
 int main(int argc, char **argv)
 {
+    char *filename;
+    int n_min = 50, n_max = 150;
+    if (argc == 1)
+    {
+        printf("You have to specify a file name.\n");
+        exit(-1);
+    }
+    else if (argc == 4)
+    {
+        n_min = atoi(argv[2]);
+        n_max = atoi(argv[3]);
+    }
+    printf("n_min: %d, n_max: %d\n", n_min, n_max); 
+
     PGMData *data = malloc(sizeof(PGMData));
     data = readPGM(argv[1],  data);
     printf("width: %d, height: %d\n", data->row, data->col);
-    
+
     int i, j;
     int a_min = INT_MAX, a_max = INT_MIN;
     for (i = 0; i < data->row; i++)
@@ -175,13 +186,11 @@ int main(int argc, char **argv)
         {
             a_min = min(data->matrix[i][j], a_min);
             a_max = max(data->matrix[i][j], a_max);
-
-            /*data->matrix[i][j] = max(0, data->matrix[i][j] - 100);*/
         }
     }
-    
     printf("a_min: %d, a_max: %d\n", a_min, a_max);
     
+
     for (i = 0; i < data->row; i++)
     {
         for (j = 0; j < data->col; j++)
@@ -189,11 +198,10 @@ int main(int argc, char **argv)
             int old = data->matrix[i][j];
             data->matrix[i][j] = (((data->matrix[i][j] - a_min) * (n_max - n_min) +
                 (a_max - a_min) / 2) / (a_max - a_min)) + n_min;
-            printf("old: %d, new: %d\n", old, data->matrix[i][j]);
+            //printf("old: %d, new: %d\n", old, data->matrix[i][j]);
         }
     }
     
-
     writePGM("out.pgm", data);
     free(data);
 }
