@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <string.h>
 #include <limits.h>
+#include <omp.h>
 
 /* PGM read & write code from https://ugurkoltuk.wordpress.com/2010/03/04/an-extreme-simple-pgm-io-api/ */
 
@@ -158,9 +159,76 @@ int min(int a, int b)
     return a > b ? b : a;
 }
 
+void sequential(PGMData *data, int n_min, int n_max)
+{
+    int i, j;
+    int a_min = INT_MAX, a_max = INT_MIN;
+    for (i = 0; i < data->row; i++)
+    {
+        for (j = 0; j < data->col; j++)
+        {
+            a_min = min(data->matrix[i][j], a_min);
+            a_max = max(data->matrix[i][j], a_max);
+        }
+    }
+    printf("a_min: %d, a_max: %d\n", a_min, a_max);
+
+    for (i = 0; i < data->row; i++)
+    {
+        for (j = 0; j < data->col; j++)
+        {
+            int old = data->matrix[i][j];
+            data->matrix[i][j] = (((data->matrix[i][j] - a_min) * (n_max - n_min) +
+                (a_max - a_min) / 2) / (a_max - a_min)) + n_min;
+        }
+    }
+}
+
+void parallel(PGMData *data, int n_min, int n_max)
+{
+    int i, j;
+    int a_min = INT_MAX, a_max = INT_MIN;
+    int local_min, local_max;
+    
+    #pragma omp parallel private(i, j, local_min, local_max)
+    {
+        local_min = INT_MAX;
+        local_max = INT_MIN;
+    
+        #pragma omp for nowait
+        for (i = 0; i < data->row; i++)
+        {
+            for (j = 0; j < data->col; j++)
+            {
+                local_min = min(data->matrix[i][j], local_min);
+                local_max = max(data->matrix[i][j], local_max);
+            }
+        }
+        
+        printf("tid: %d, local_min: %d, local_max: %d\n",
+            omp_get_thread_num(), local_min, local_max);
+        
+        #pragma omp critical
+        {
+            a_min = min(local_min, a_min);
+            a_max = max(local_max, a_max);
+        }
+    }
+    printf("a_min: %d, a_max: %d\n", a_min, a_max);
+
+    for (i = 0; i < data->row; i++)
+    {
+        for (j = 0; j < data->col; j++)
+        {
+            int old = data->matrix[i][j];
+            data->matrix[i][j] = (((data->matrix[i][j] - a_min) * (n_max - n_min) +
+                (a_max - a_min) / 2) / (a_max - a_min)) + n_min;
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
-    char *filename;
     int n_min = 50, n_max = 150;
     if (argc == 1)
     {
@@ -178,29 +246,8 @@ int main(int argc, char **argv)
     data = readPGM(argv[1],  data);
     printf("width: %d, height: %d\n", data->row, data->col);
 
-    int i, j;
-    int a_min = INT_MAX, a_max = INT_MIN;
-    for (i = 0; i < data->row; i++)
-    {
-        for (j = 0; j < data->col; j++)
-        {
-            a_min = min(data->matrix[i][j], a_min);
-            a_max = max(data->matrix[i][j], a_max);
-        }
-    }
-    printf("a_min: %d, a_max: %d\n", a_min, a_max);
-    
-
-    for (i = 0; i < data->row; i++)
-    {
-        for (j = 0; j < data->col; j++)
-        {
-            int old = data->matrix[i][j];
-            data->matrix[i][j] = (((data->matrix[i][j] - a_min) * (n_max - n_min) +
-                (a_max - a_min) / 2) / (a_max - a_min)) + n_min;
-            //printf("old: %d, new: %d\n", old, data->matrix[i][j]);
-        }
-    }
+    //sequential(data, n_min, n_max);
+    parallel(data, n_min, n_max);
     
     writePGM("out.pgm", data);
     free(data);
