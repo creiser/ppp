@@ -216,11 +216,11 @@ void parallel(PGMData *data, int n_min, int n_max)
     }
     printf("a_min: %d, a_max: %d\n", a_min, a_max);
 
+    #pragma omp parallel for private(j)
     for (i = 0; i < data->row; i++)
     {
         for (j = 0; j < data->col; j++)
         {
-            int old = data->matrix[i][j];
             data->matrix[i][j] = (((data->matrix[i][j] - a_min) * (n_max - n_min) +
                 (a_max - a_min) / 2) / (a_max - a_min)) + n_min;
         }
