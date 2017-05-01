@@ -6,6 +6,16 @@
 #include <omp.h>
 #include <mpi.h>
 
+int max(int a, int b)
+{
+    return a > b ? a : b;
+}
+
+int min(int a, int b)
+{
+    return a > b ? b : a;
+}
+
 /* PGM read & write code from https://ugurkoltuk.wordpress.com/2010/03/04/an-extreme-simple-pgm-io-api/ */
 
 typedef struct _PGMData {
@@ -110,6 +120,63 @@ PGMData* readPGM(const char *file_name, PGMData *data)
     return data;
 }
 
+int round_up_div(int x, int y)
+{
+	return (x + y - 1) / y;
+}
+
+PGMData* readPGMDistributed(const char *file_name, PGMData *data,
+	int rank, int num_processes, int *num_pixels_per_process, int *local_size)
+{
+    FILE *pgmFile;
+    char version[3];
+    int i, j;
+    int lo, hi;
+ 
+    pgmFile = fopen(file_name, "rb");
+    if (pgmFile == NULL) {
+        perror("cannot open file to read");
+        exit(EXIT_FAILURE);
+    }
+ 
+    fgets(version, sizeof(version), pgmFile);
+    if (strcmp(version, "P5")) {
+        fprintf(stderr, "Wrong file type!\n");
+        exit(EXIT_FAILURE);
+    }
+ 
+    SkipComments(pgmFile);
+    fscanf(pgmFile, "%d", &data->row);
+    SkipComments(pgmFile);
+    fscanf(pgmFile, "%d", &data->col);
+    SkipComments(pgmFile);
+    fscanf(pgmFile, "%d", &data->max_gray);
+    fgetc(pgmFile);
+	data->size = data->row * data->col;
+	
+	*num_pixels_per_process = round_up_div(data->size, num_processes);
+	int start = rank * *num_pixels_per_process;
+	int end =  min((rank + 1) * *num_pixels_per_process, data->size);
+	*local_size = end - start;
+ 
+	fseek(pgmFile, start, SEEK_CUR);
+	data->pixels = malloc(sizeof(int) * *local_size);
+    if (data->max_gray > 255)
+        for (i = 0; i < *local_size; ++i) {
+			hi = fgetc(pgmFile);
+			lo = fgetc(pgmFile);
+			data->pixels[i] = (hi << 8) + lo;
+        }
+    else
+        for (i = 0; i < *local_size; ++i) {
+			lo = fgetc(pgmFile);
+			data->pixels[i] = lo;
+        }
+ 
+    fclose(pgmFile);
+    return data;
+}
+
 /*and for writing*/
  
 void writePGM(const char *filename, const PGMData *data)
@@ -144,16 +211,6 @@ void writePGM(const char *filename, const PGMData *data)
  
     fclose(pgmFile);
 	free(data->pixels);
-}
-
-int max(int a, int b)
-{
-    return a > b ? a : b;
-}
-
-int min(int a, int b)
-{
-    return a > b ? b : a;
 }
 
 void sequential(PGMData *data, int n_min, int n_max)
@@ -217,22 +274,24 @@ void sequential(PGMData *data, int n_min, int n_max)
     }
 }*/
 
-int round_up_div(int x, int y)
+void distributed(int n_min, int n_max, const char *file_name)
 {
-	return (x + y - 1) / y;
-}
-
-void distributed(PGMData *data, int n_min, int n_max, int rank, int num_processes)
-{
-	int num_pixels_per_process = round_up_div(data->size, num_processes);
-	int start = rank * num_pixels_per_process;
-	int end =  min((rank + 1) * num_pixels_per_process, data->size);
+	MPI_Init(NULL, NULL);
 	
-	printf("Process %d is assigned pixels %d to %d\n", rank, start, end);
+	int rank;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	int num_processes;
+	MPI_Comm_size(MPI_COMM_WORLD, &num_processes);
+	
+	PGMData *data = malloc(sizeof(PGMData));
+	int num_pixels_per_process, local_size;
+	data = readPGMDistributed(file_name, data, rank, num_processes, &num_pixels_per_process, &local_size);
+    printf("width: %d, height: %d\n", data->row, data->col);
+	printf("process: %d, local_size: %d\n", rank, local_size);
 	
     int i;
     int process_min = INT_MAX, process_max = INT_MIN;
-    for (i = start; i < end; i++)
+    for (i = 0; i < local_size; i++)
     {
 		process_min = min(data->pixels[i], process_min);
 		process_max = max(data->pixels[i], process_max);
@@ -247,7 +306,7 @@ void distributed(PGMData *data, int n_min, int n_max, int rank, int num_processe
 	
 	printf("process: %d, a_min: %d, a_max: %d\n", rank, a_min, a_max);
 
-    for (i = start; i < end; i++)
+    for (i = 0; i < local_size; i++)
     {
 		data->pixels[i] = (((data->pixels[i] - a_min) * (n_max - n_min) +
 			(a_max - a_min) / 2) / (a_max - a_min)) + n_min;
@@ -262,12 +321,22 @@ void distributed(PGMData *data, int n_min, int n_max, int rank, int num_processe
 	}
 	receive_counts[i] = data->size - (num_processes + 1) * num_pixels_per_process;
 	
-	int send_length = end - start;
-	MPI_Gatherv(&data->pixels[start], send_length, MPI_INT, data->pixels,
+	int *rootBuffer;
+	if (rank == 0)
+		rootBuffer = malloc(sizeof(int) * data->size);
+	MPI_Gatherv(data->pixels, local_size, MPI_INT, rootBuffer,
 		receive_counts, receive_displacements, MPI_INT, 0, MPI_COMM_WORLD);
-	
 	free(receive_counts);
 	free(receive_displacements);
+	
+	if (rank == 0) {
+		free(data->pixels);
+		data->pixels = rootBuffer;
+		writePGM("out.pgm", data);
+	}
+    free(data);
+	
+	MPI_Finalize();
 }
 
 int main(int argc, char **argv)
@@ -284,26 +353,8 @@ int main(int argc, char **argv)
         n_max = atoi(argv[3]);
     }
     printf("n_min: %d, n_max: %d\n", n_min, n_max); 
-	
-	MPI_Init(NULL, NULL);
-	
-	int rank;
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	int num_processes;
-	MPI_Comm_size(MPI_COMM_WORLD, &num_processes);
-
-    PGMData *data = malloc(sizeof(PGMData));
-    data = readPGM(argv[1],  data);
-    printf("width: %d, height: %d\n", data->row, data->col);
 
     //sequential(data, n_min, n_max);
     //parallel(data, n_min, n_max);
-	distributed(data, n_min, n_max, rank, num_processes);
-    
-	if (rank == 0) {
-		writePGM("out.pgm", data);
-	}
-    free(data);
-	
-	MPI_Finalize();
+	distributed(n_min, n_max, argv[1]);
 }
