@@ -278,9 +278,8 @@ void distributed(int n_min, int n_max, const char *file_name)
 {
 	MPI_Init(NULL, NULL);
 	
-	int rank;
+	int rank, num_processes;
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	int num_processes;
 	MPI_Comm_size(MPI_COMM_WORLD, &num_processes);
 	
 	PGMData *data = malloc(sizeof(PGMData));
@@ -289,23 +288,38 @@ void distributed(int n_min, int n_max, const char *file_name)
     printf("width: %d, height: %d\n", data->row, data->col);
 	printf("process: %d, local_size: %d\n", rank, local_size);
 	
-    int i;
-    int process_min = INT_MAX, process_max = INT_MIN;
-    for (i = 0; i < local_size; i++)
+	int i, a_min = INT_MAX, a_max = INT_MIN, local_min, local_max;
+	#pragma omp parallel private(i, local_min, local_max)
     {
-		process_min = min(data->pixels[i], process_min);
-		process_max = max(data->pixels[i], process_max);
+        local_min = INT_MAX;
+        local_max = INT_MIN;
+    
+        #pragma omp for nowait
+        for (i = 0; i < local_size; i++)
+        {
+			local_min = min(data->pixels[i], local_min);
+			local_max = max(data->pixels[i], local_max);
+        }
+        
+        printf("process: %d, thread: %d, local_min: %d, local_max: %d\n", rank,
+            omp_get_thread_num(), local_min, local_max);
+        
+        #pragma omp critical
+        {
+            a_min = min(local_min, a_min);
+            a_max = max(local_max, a_max);
+        }
     }
-    printf("process: %d, process_min: %d, process_max: %d\n", rank, process_min, process_max);
+    printf("process: %d, a_min: %d, a_max: %d\n", rank, a_min, a_max);
 	
-	int a_min, a_max;
-	MPI_Allreduce(&process_min, &a_min, 1, MPI_INT, MPI_MIN,
+	MPI_Allreduce(&a_min, &a_min, 1, MPI_INT, MPI_MIN,
 				  MPI_COMM_WORLD);
-    MPI_Allreduce(&process_max, &a_max, 1, MPI_INT, MPI_MAX,
+    MPI_Allreduce(&a_max, &a_max, 1, MPI_INT, MPI_MAX,
 				  MPI_COMM_WORLD);
 	
-	printf("process: %d, a_min: %d, a_max: %d\n", rank, a_min, a_max);
+	printf("(global) process: %d, a_min: %d, a_max: %d\n", rank, a_min, a_max);
 
+	#pragma omp parallel for
     for (i = 0; i < local_size; i++)
     {
 		data->pixels[i] = (((data->pixels[i] - a_min) * (n_max - n_min) +
