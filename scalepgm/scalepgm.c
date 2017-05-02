@@ -17,46 +17,53 @@ int min(int a, int b)
     return a > b ? b : a;
 }
 
-/*void sequential(PGMData *data, int n_min, int n_max)
+void sequential(const char *file_name, int n_min, int n_max)
 {
-    int i, j;
+    enum pnm_kind kind;
+    int rows, columns, maxcolor;
+    uint8_t *image = ppp_pnm_read(file_name, &kind,
+        &rows, &columns, &maxcolor);
+
+    int i;
     int a_min = INT_MAX, a_max = INT_MIN;
-    for (i = 0; i < data->size; i++)
+    for (i = 0; i < rows * columns; i++)
     {
-		a_min = min(data->pixels[i], a_min);
-		a_max = max(data->pixels[i], a_max);
+		a_min = min(image[i], a_min);
+		a_max = max(image[i], a_max);
     }
     printf("a_min: %d, a_max: %d\n", a_min, a_max);
 
-    for (i = 0; i < data->size; i++)
+    for (i = 0; i < rows * columns; i++)
     {
-		data->pixels[i] = (((data->pixels[i] - a_min) * (n_max - n_min) +
+		image[i] = (((image[i] - a_min) * (n_max - n_min) +
 			(a_max - a_min) / 2) / (a_max - a_min)) + n_min;
     }
-}*/
-
-/*void parallel(PGMData *data, int n_min, int n_max)
-{
-    int i, j;
-    int a_min = INT_MAX, a_max = INT_MIN;
-    int local_min, local_max;
     
-    #pragma omp parallel private(i, j, local_min, local_max)
+    if (ppp_pnm_write("out.pgm", kind, rows, columns, maxcolor, image) != 0)
+		fprintf(stderr, "write error\n");
+}
+
+void parallel(const char *file_name, int n_min, int n_max)
+{
+    enum pnm_kind kind;
+    int rows, columns, maxcolor;
+    uint8_t *image = ppp_pnm_read(file_name, &kind,
+        &rows, &columns, &maxcolor);
+
+	int i, a_min = INT_MAX, a_max = INT_MIN, local_min, local_max;
+	#pragma omp parallel private(i, local_min, local_max)
     {
         local_min = INT_MAX;
         local_max = INT_MIN;
     
         #pragma omp for nowait
-        for (i = 0; i < data->row; i++)
+        for (i = 0; i < rows * columns; i++)
         {
-            for (j = 0; j < data->col; j++)
-            {
-                local_min = min(data->pixels[i], local_min);
-                local_max = max(data->pixels[i], local_max);
-            }
+			local_min = min(image[i], local_min);
+			local_max = max(image[i], local_max);
         }
         
-        printf("tid: %d, local_min: %d, local_max: %d\n",
+        printf("thread: %d, local_min: %d, local_max: %d\n",
             omp_get_thread_num(), local_min, local_max);
         
         #pragma omp critical
@@ -67,16 +74,16 @@ int min(int a, int b)
     }
     printf("a_min: %d, a_max: %d\n", a_min, a_max);
 
-    #pragma omp parallel for private(j)
-    for (i = 0; i < data->row; i++)
+	#pragma omp parallel for
+    for (i = 0; i < rows * columns; i++)
     {
-        for (j = 0; j < data->col; j++)
-        {
-            data->pixels[i] = (((data->pixels[i] - a_min) * (n_max - n_min) +
-                (a_max - a_min) / 2) / (a_max - a_min)) + n_min;
-        }
+		image[i] = (((image[i] - a_min) * (n_max - n_min) +
+			(a_max - a_min) / 2) / (a_max - a_min)) + n_min;
     }
-}*/
+    
+    if (ppp_pnm_write("out.pgm", kind, rows, columns, maxcolor, image) != 0)
+		fprintf(stderr, "write error\n");
+}
 
 int self, np;
 int myLength;
@@ -125,7 +132,7 @@ uint8_t *partfn(enum pnm_kind kind,
                             * sizeof(uint8_t));
 }
 
-void distributed(int n_min, int n_max, const char *file_name)
+void distributed(const char *file_name, int n_min, int n_max)
 {
     MPI_Init(NULL, NULL);
     MPI_Comm_size(MPI_COMM_WORLD, &np);
@@ -214,7 +221,7 @@ int main(int argc, char **argv)
     }
     printf("n_min: %d, n_max: %d\n", n_min, n_max); 
 
-    //sequential(data, n_min, n_max);
-    //parallel(data, n_min, n_max);
-	distributed(n_min, n_max, argv[1]);
+    //sequential(argv[1], n_min, n_max);
+    //parallel(argv[1], n_min, n_max);
+	distributed(argv[1], n_min, n_max);
 }
