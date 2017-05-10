@@ -154,6 +154,8 @@ int main(int argc, char *argv[]) {
         }
 
         free(myPart);
+        free(rcvCounts);
+        free(displs);
     } else {
         printf("could not load image\n");
     }
