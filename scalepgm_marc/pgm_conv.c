@@ -29,15 +29,19 @@ void find_min_and_max(uint8_t* min, uint8_t* max, uint8_t* picture, int size) {
 
 /* Sucht parallelisiert das Minimum und Maximum der size Werte von picture und speichert sie in min und max. */ 
 void omp_find_min_and_max(uint8_t* min_ptr, uint8_t* max_ptr, uint8_t* picture, int size) {
-#pragma omp parallel for reduction(min:min_ptr), reduction(max:max_ptr)
+	uint8_t min = *min_ptr;
+	uint8_t max = *max_ptr;
+#pragma omp parallel for reduction(min:min), reduction(max:max)
 	for(int i = 0; i < size; i++) {
-		if(*max_ptr < picture[i]) {
-			*max_ptr = picture[i];
+		if(max < picture[i]) {
+			max = picture[i];
 		}
-		if(*min_ptr > picture[i]) {
-			*min_ptr = picture[i];
+		if(min > picture[i]) {
+			min = picture[i];
 		}
 	}
+	*min_ptr = min;
+	*max_ptr = max;
 }
 
 uint8_t* mpi_part(enum pnm_kind kind, int rows, int cols, int* offset, int* length) {
@@ -49,7 +53,12 @@ uint8_t* mpi_part(enum pnm_kind kind, int rows, int cols, int* offset, int* leng
 	if (self < rest) {
 		*length = rounded_length + 1;
 		*offset = self * *length;
-		pointer = (uint8_t*) calloc(rounded_length + 1, sizeof(uint8_t));
+		if (self == 0) {
+			pointer = (uint8_t*) calloc(size, sizeof(uint8_t));
+		}
+		else {
+						pointer = (uint8_t*) calloc(rounded_length + 1, sizeof(uint8_t));
+		}
 
 	}
 	else {
@@ -109,6 +118,7 @@ int omp_grey_scaling (char* picture_name, int new_min, int new_max, double* dura
 	max = 0;
 	min = (uint8_t) maxval;
 	size = rows * cols;
+	printf("size: %u\n", size);
 	omp_find_min_and_max(&min, &max, picture, size);
 
 #pragma omp parallel for
@@ -127,43 +137,50 @@ int mpi_grey_scaling (char* picture_name, int new_min, int new_max, double* dura
 
 	uint8_t* picture_part, picture;
 	uint8_t min, max;
-	int maxval, rows, cols, size, length;
+	int maxval, rows, cols, size, lengths[np], offsets[np];
 	enum pnm_kind kind;
 	double start, end;
 
 	start = seconds();
 	picture_part = ppp_pnm_read_part(picture_name, &kind, &rows, &cols, &maxval, &mpi_part);
-	if(picture == NULL) {
+	if(picture_part == NULL) {
 		fprintf(stderr, "An error occured while trying to read the picture\n");
 		return 1;
 	}
+	printf("Read durch!\n");
 
 	max = 0;
 	min = (uint8_t) maxval;
 	size = rows * cols;
-	length = self < size % np ? size / np + 1 : size / np;
-	omp_find_min_and_max(&min, &max, picture, length);
+	printf("size: %u\n", size);
+	lengths[self] = self < size % np ? size / np + 1 : size / np;
+	offsets[self] = self < size % np ? self * lengths[self] : size % np * (size / np + 1) + (self - size % np) * size / np;
+	printf("%d %u\n", self, lengths[self]);
+	printf("%d %u\n", self, offsets[self]);
+	omp_find_min_and_max(&min, &max, picture_part, lengths[self]);
 	MPI_Allreduce(MPI_IN_PLACE, &min, 1, MPI_UINT8_T, MPI_MIN, MPI_COMM_WORLD);
 	MPI_Allreduce(MPI_IN_PLACE, &max, 1, MPI_UINT8_T, MPI_MAX, MPI_COMM_WORLD);
 
 #pragma omp parallel for
-	for(int i = 0; i < length; i++) {
+	for(int i = 0; i < lengths[self]; i++) {
 		picture_part[i] = ((picture_part[i] - min) * (new_max - new_min) + (max - min) / 2) / (max - min) + new_min;
 	}
-
+MPI_Gatherv(picture_part, lengths[self], MPI_UINT8_T, picture_part, lengths, offsets, MPI_UINT8_T, 0, MPI_COMM_WORLD);
 	if(self == 0) {
-		picture = (uint8_t*) calloc(size, sizeof(uint8_t));
-		MPI_Gather(picture_part, length, MPI_UINT8_T, picture, length, MPI_UINT8_T, 0, MPI_COMM_WORLD);
+		//picture = (uint8_t*) calloc(size, sizeof(uint8_t));
+		
 		ppp_pnm_write("scaled_mpi.pgm", kind, rows, cols, maxval, picture);
 	}
-	else {
-		MPI_Gather(picture_part, length, MPI_UINT8_T, NULL, length, MPI_UINT8_T, 0, MPI_COMM_WORLD);
-	}
+/*	else {
+		MPI_Gatherv(picture_part, lengths[self], MPI_UINT8_T, NULL, NULL, NULL, MPI_UINT8_T, 0, MPI_COMM_WORLD);
+	}*/
+	printf("Gatherv durch!\n");
 	MPI_Barrier(MPI_COMM_WORLD);
+	printf("Barrier durch!\n");
 	end = seconds();
 	free(picture_part);
 	if(self == 0) {
-		free(picture);
+	//	free(picture);
 	}
 	*duration = end - start;
 	return 0;
@@ -172,7 +189,7 @@ int mpi_grey_scaling (char* picture_name, int new_min, int new_max, double* dura
 
 int main(int argc, char* argv[]) {
     int min, max;
-    double duration;
+    double duration = 0.0;
 	char* picture_name;
 
     MPI_Init(&argc, &argv);
@@ -188,21 +205,21 @@ int main(int argc, char* argv[]) {
 	max = atoi(argv[3]);
 
 	seq_grey_scaling(picture_name, min, max, &duration);
-	MPI_Reduce(MPI_IN_PLACE, &duration, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+	//MPI_Reduce(MPI_IN_PLACE, &duration, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 	if (self == 0) {
-		printf("Sequentielle Ausführungszeit: %lf", duration / np);
+		printf("Sequentielle Ausführungszeit: %lf\n", duration / np);
 	}
 
 	omp_grey_scaling(picture_name, min, max, &duration);
-	MPI_Reduce(MPI_IN_PLACE, &duration, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+	//MPI_Reduce(MPI_IN_PLACE, &duration, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 	if (self == 0) {
-		printf("OpenMP-parallele Ausführungszeit: %lf", duration / np);
+		printf("OpenMP-parallele Ausführungszeit: %lf\n", duration / np);
 	}
 
 	mpi_grey_scaling(picture_name, min, max, &duration);
-	MPI_Reduce(MPI_IN_PLACE, &duration, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+	//MPI_Reduce(MPI_IN_PLACE, &duration, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
 	if (self == 0) {
-		printf("MPI-OpenMP-parallele Ausführungszeit: %lf", duration / np);
+		printf("MPI-OpenMP-parallele Ausführungszeit: %lf\n", duration / np);
 	}
 
 	MPI_Finalize();
