@@ -54,8 +54,8 @@ int main(int argc, char *argv[]) {
 
             start = seconds();
 
-            #pragma omp parallel
-            {
+#pragma omp parallel
+{
             int lomin = maxcolor;
             int lomax = 0;
 
@@ -78,7 +78,7 @@ int main(int argc, char *argv[]) {
                     omax = lomax;
                 }
             }            
-            }
+}
 
             end = seconds();
             printf("Calculate min/max: %fs; [%d, %d]\n", (end-start), omin, omax);
@@ -87,7 +87,7 @@ int main(int argc, char *argv[]) {
             odiff = omax - omin;
             error = odiff/2;
 
-            #pragma omp parallel
+            #pragma omp parallel for
             for (y = 0; y < rows*columns; y++) {
                 image[y] = ((image[y] - omin)*ndiff + error)/odiff + nmin;
             }
