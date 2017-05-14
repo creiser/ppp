@@ -239,7 +239,7 @@ void distributed(const char *file_name, int n_min, int n_max)
  * to a new interval.
  * The program is called with 4 arguments:
  *      input-image min-scale max-scale method
- * where method is an integer between 0 and 3:
+ * where method is an integer between 0 and 2:
  * 	    0: sequential, 1: parallel, 2: distributed
  */
 int main(int argc, char **argv)
@@ -248,7 +248,7 @@ int main(int argc, char **argv)
     if (argc == 1)
     {
         printf("Usage: input-image min-scale max-scale method\n"
-			"Method is an integer between 0 and 3\n\t"
+			"Method is an integer between 0 and 2\n\t"
 			"0: sequential, 1: parallel, 2: distributed\n");
         exit(-1);
     }

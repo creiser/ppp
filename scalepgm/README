@@ -1,0 +1,29 @@
+
+scalepgm - skaliert PGM wie in Aufgabenstellung beschrieben
+Erstellen mit:
+    mpicc -o scalepgm scalepgm.c -fopenmp -I/home/ppp2017/ppp_pnm -L/home/ppp2017/ppp_pnm -lppp_pnm
+Ausführen mit:
+    ./scalepgm input-image min-scale max-scale method
+    
+    wobei "method" ein Integer zwischen 0 und 2 ist mit
+    0: sequential, 1: parallel, 2: distributed
+    
+    Die skalierte Datei wird in "out.pgm" gespeichert.
+    
+genhugepgm - generiert 1.6 GB große Datei huge.pgm zum Benchmarking
+Erstellen mit:
+    gcc -o genhugepgm genhugepgm.c -I/home/ppp2017/ppp_pnm -L/home/ppp2017/ppp_pnm -lppp_pnm
+Ausführen mit:
+    ./genhugepgm
+    
+benchmark.py - führt automatisch Skalierungen mit 1 bis 6 Prozessorkernen aus mit je 5 Iterationen
+               und speichert die gemessenen Zeiten in benchmark.csv (unsere Ergebnisse liegen bei)
+               Erfordert, dass huge.pgm im selben Verzeichnis liegt.
+Ausführen mit:
+    python ./benchmark.py
+Falls pandas nicht vorhanden:
+    pip install pandas
+    
+ppp_2.png - Ergebnisse des Benchmarking: #Prozessorkerne gegenübergestellt mit benötigter Zeit
+            zur Minimums- und Maximumsbestimmung bzw. Skalierung
+
