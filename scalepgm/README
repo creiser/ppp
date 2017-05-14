@@ -16,14 +16,15 @@ Erstellen mit:
 Ausführen mit:
     ./genhugepgm
     
-benchmark.py - führt automatisch Skalierungen mit 1 bis 6 Prozessorkernen aus mit je 5 Iterationen
-               und speichert die gemessenen Zeiten in benchmark.csv (unsere Ergebnisse liegen bei)
-               Erfordert, dass huge.pgm im selben Verzeichnis liegt.
+benchmark.py - führt automatisch Skalierungen auf Zeus mit 1 bis 6 Prozessorkernen aus mit je 5
+               Iterationen und speichert die gemessenen Zeiten in benchmark.csv (unsere Ergebnisse
+               liegen bei). Für jedes gemessene Zeitintervall ist die Standartabweichung (_stdev)
+               mit angegeben. Erfordert, dass huge.pgm im selben Verzeichnis liegt.
 Ausführen mit:
     python ./benchmark.py
 Falls pandas nicht vorhanden:
     pip install pandas
     
 ppp_2.png - Ergebnisse des Benchmarking: #Prozessorkerne gegenübergestellt mit benötigter Zeit
-            zur Minimums- und Maximumsbestimmung bzw. Skalierung
-
+            zur Minimums- und Maximumsbestimmung bzw. Skalierung, berechnet auf Zeus mit 1.6 GB
+            großem Bild
