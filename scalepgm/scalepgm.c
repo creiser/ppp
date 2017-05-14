@@ -43,7 +43,6 @@ void sequential(const char *file_name, int n_min, int n_max)
 		a_min = min(image[i], a_min);
 		a_max = max(image[i], a_max);
     }
-    printf("a_min: %d, a_max: %d\n", a_min, a_max);
 	printf("min-max: %f\n", seconds() - start);
 
 	start = seconds();
@@ -146,8 +145,6 @@ uint8_t *partfn(enum pnm_kind kind,
     get_offset_and_length(self, rows, columns, offset, length);
     myLength = *length;
 
-    //printf("self: %d, offset: %d, length: %d\n", self, *offset, *length);
-
     /*
      * Allocate space for the image part.
      * On processor 0 we allocate space for the whole
@@ -172,8 +169,6 @@ void distributed(const char *file_name, int n_min, int n_max)
         &columns, &maxcolor, partfn);
 	if (self == 0)
 		printf("load: %f\n", seconds() - start);
-    //printf("rows: %d, columns: %d\n", rows, columns);
-	//printf("self: %d, myLength: %d\n", self, myLength);
 	
 	start = seconds();
 	int i, a_min, a_max;
@@ -183,18 +178,15 @@ void distributed(const char *file_name, int n_min, int n_max)
 		a_min = min(myPart[i], a_min);
 		a_max = max(myPart[i], a_max);
     }
-    //printf("self: %d, a_min: %d, a_max: %d\n", self, a_min, a_max);
 	
 	MPI_Allreduce(&a_min, &a_min, 1, MPI_UINT8_T, MPI_MIN,
 				  MPI_COMM_WORLD);
     MPI_Allreduce(&a_max, &a_max, 1, MPI_UINT8_T, MPI_MAX,
 				  MPI_COMM_WORLD);
-    
 	
 	if (self == 0)
 	{
 		printf("min-max: %f\n", seconds() - start);
-		printf("(after reduce) a_min: %d, a_max: %d\n", a_min, a_max);
 	}
 	
 	start = seconds();
@@ -210,8 +202,8 @@ void distributed(const char *file_name, int n_min, int n_max)
 	if (self == 0)
 		printf("scaling: %f\n", seconds() - start);
 	
-	start = seconds();
 	// Gather subarrays from all processes
+	start = seconds();
 	int *receive_counts = malloc(sizeof(int) * np);
 	int *receive_displacements = malloc(sizeof(int) * np);
 	for (i = 0; i < np; i++)
