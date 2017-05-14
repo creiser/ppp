@@ -1,7 +1,7 @@
 pgm_conv: pgm_conv.o
-	mpicc -fopenmp -L/home/ppp2017/ppp_pnm -lppp_pnm -o pgm_conv pgm_conv.o
+	mpicc -fopenmp -o pgm_conv pgm_conv.o -L/home/ppp2017/ppp_pnm -lppp_pnm
 comp: comp.o
-	gcc -fopenmp -L/home/ppp2017/ppp_pnm -lppp_pnm -o comp comp.o
+	gcc -fopenmp -o comp comp.o -L/home/ppp2017/ppp_pnm -lppp_pnm
 pgm_conv.o: pgm_conv.c
 	mpicc -Wall -fopenmp -I/home/ppp2017/ppp_pnm -c pgm_conv.c
 comp.o: comp.c
