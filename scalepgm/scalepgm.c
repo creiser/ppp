@@ -47,10 +47,13 @@ void sequential(const char *file_name, int n_min, int n_max)
 	printf("min-max: %f\n", seconds() - start);
 
 	start = seconds();
+	int n_diff = n_max - n_min;
+	int a_diff = a_max - a_min;
+	int half_a_diff = a_diff / 2;
     for (i = 0; i < rows * columns; i++)
     {
-		image[i] = (((image[i] - a_min) * (n_max - n_min) +
-			(a_max - a_min) / 2) / (a_max - a_min)) + n_min;
+		image[i] = (((image[i] - a_min) * n_diff +
+			half_a_diff) / a_diff) + n_min;
     }
 	printf("scaling: %f\n", seconds() - start);
     
@@ -85,11 +88,14 @@ void parallel(const char *file_name, int n_min, int n_max)
 	printf("min-max: %f\n", seconds() - start);
 
 	start = seconds();
+	int n_diff = n_max - n_min;
+	int a_diff = a_max - a_min;
+	int half_a_diff = a_diff / 2;
 	#pragma omp parallel for
     for (i = 0; i < rows * columns; i++)
     {
-		image[i] = (((image[i] - a_min) * (n_max - n_min) +
-			(a_max - a_min) / 2) / (a_max - a_min)) + n_min;
+		image[i] = (((image[i] - a_min) * n_diff +
+			half_a_diff) / a_diff) + n_min;
     }
 	printf("scaling: %f\n", seconds() - start);
     
@@ -191,13 +197,15 @@ void distributed(const char *file_name, int n_min, int n_max)
 		printf("(after reduce) a_min: %d, a_max: %d\n", a_min, a_max);
 	}
 	
-
 	start = seconds();
+	int n_diff = n_max - n_min;
+	int a_diff = a_max - a_min;
+	int half_a_diff = a_diff / 2;
 	#pragma omp parallel for
     for (i = 0; i < myLength; i++)
     {
-		myPart[i] = (((myPart[i] - a_min) * (n_max - n_min) +
-			(a_max - a_min) / 2) / (a_max - a_min)) + n_min;
+		myPart[i] = (((myPart[i] - a_min) * n_diff +
+			half_a_diff) / a_diff) + n_min;
     }
 	if (self == 0)
 		printf("scaling: %f\n", seconds() - start);
@@ -234,12 +242,22 @@ void distributed(const char *file_name, int n_min, int n_max)
 #define PARALLEL 1
 #define DISTRIBUTED 2
 
+/*
+ * Load a PGM (Portable Graymap) image and scale the gray values of every pixel
+ * to a new interval.
+ * The program is called with 4 arguments:
+ *      input-image min-scale max-scale method
+ * where method is an integer between 0 and 3:
+ * 	    0: sequential, 1: parallel, 2: distributed
+ */
 int main(int argc, char **argv)
 {
     int n_min = 50, n_max = 150, method = DISTRIBUTED;
     if (argc == 1)
     {
-        printf("You have to specify a file name.\n");
+        printf("Usage: input-image min-scale max-scale method\n"
+			"Method is an integer between 0 and 3\n\t"
+			"0: sequential, 1: parallel, 2: distributed\n");
         exit(-1);
     }
     else if (argc >= 4)
