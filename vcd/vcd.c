@@ -1,8 +1,8 @@
 #include <getopt.h>
 #include <math.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
 
@@ -84,7 +84,7 @@ int main(int argc, char* argv[]) {
 	int option;
 	bool execute_vcd  = false;
 	bool execute_sobel = false;
-	int rows, cols, maxval;
+	int option, rows, cols, maxval;
 	enum pnm_kind kind;
 	char* output_file = "out.pgm";
 	char* input_file;
