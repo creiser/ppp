@@ -1,7 +1,9 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <string.h>
 #include <sys/time.h>
+#include <unistd.h>
 #include "ppp_pnm.h"
 
 /* liefert die Sekunden seit dem 01.01.1970 */
@@ -14,7 +16,7 @@ static double seconds() {
 int main(int argc, char* argv[]) {
 	bool execute_vcd  = false;
 	bool execute_sobel = false;
-	int rows, cols, maxval;
+	int option, rows, cols, maxval;
 	enum pnm_kind kind;
 	char* output_file = "out.pgm";
 	char* input_file;
@@ -40,7 +42,7 @@ int main(int argc, char* argv[]) {
     }
     input_file = argv[argc - 1];
 
-    if(!str_cmp(output_file, input_file)) {
+    if(!strcmp(output_file, input_file)) {
 		bool abort_program = true;
 		bool waiting_for_answer = true;
 		char answer;
