@@ -55,13 +55,61 @@ void vcdNaive(double *image, int rows, int columns) {
         	c >= 0 && c < columns ? image[r * columns + c] : 0;
     }
 
+	for (int i = 0; i < N; i++)
+	{
+		double delta;
+		int epsilon_exit = 1;
+		for (int y = 0; y < rows; ++y)
+		{
+			for (int x = 0; x < columns; ++x)
+			{
+				delta =  phi(S(x + 1, y) - S(x, y));
+				delta -= phi(S(x, y) - S(x - 1, y));
+				delta += phi(S(x, y + 1) - S(x, y));
+				delta -= phi(S(x, y) - S(x, y - 1));
+				delta += xi(S(x + 1, y + 1) - S(x, y));
+				delta -= xi(S(x, y) - S(x - 1 , y - 1));
+				delta += xi(S(x - 1, y + 1) - S(x, y));
+				delta -= xi(S(x, y) - S(x + 1, y - 1));
+				image[y * columns + x] = S(x, y) + kappa * delta_t * delta;
+				
+				if (fabs(delta) > epsilon &&
+				    x >= 1 && x < columns - 1 &&
+			        y >= 1 && y < rows - 1)
+				{
+					epsilon_exit = 0;
+				} 
+			}
+		}
+		if (epsilon_exit)
+			break;
+	}  
+}
+
+/*
+ * Cache previous row to reuse already calculated values.
+ */
+void vcdOptimized(double *image, int rows, int columns) {
+	inline double S(int c, int r)
+    {
+        return r >= 0 && r <= rows &&
+        	c >= 0 && c < columns ? image[r * columns + c] : 0;
+    }
+
 	double delta;
+	/* Allocate one row */
+	//double cachedVals = malloc(columns * sizeof(double));
     for (int y = 0; y < rows; ++y)
     {
+    	double prev = phi(S(0, y)); // consider: S(-1, y) = 0
 		for (int x = 0; x < columns; ++x)
 		{
-			delta =  phi(S(x + 1, y) - S(x, y));
-			delta -= phi(S(x, y) - S(x - 1, y));
+			delta = -prev;
+			prev = phi(S(x + 1, y) - S(x, y));
+			delta += prev;
+		
+			//delta =  phi(S(x + 1, y) - S(x, y));
+			//delta -= phi(S(x, y) - S(x - 1, y));
 			delta += phi(S(x, y + 1) - S(x, y));
 			delta -= phi(S(x, y) - S(x, y - 1));
 			delta += xi(S(x + 1, y + 1) - S(x, y));
@@ -70,7 +118,8 @@ void vcdNaive(double *image, int rows, int columns) {
 			delta -= xi(S(x, y) - S(x + 1, y - 1));
 			image[y * columns + x] = S(x, y) + kappa * delta_t * delta;
 		}
-    }    
+    }
+    //free(cachedVals);
 }
 
 /* liefert die Sekunden seit dem 01.01.1970 */
@@ -138,6 +187,7 @@ int main(int argc, char* argv[]) {
 	
 	double *image = convertImageToDouble(picture, rows, cols, maxval);
 	vcdNaive(image, rows, cols);
+	//vcdOptimized(image, rows, cols);
 
 	if(execute_vcd) {
 		// execute vcd algorithm
@@ -148,6 +198,7 @@ int main(int argc, char* argv[]) {
 	}
 	
 	convertDoubleToImage(image, picture, rows, cols, maxval);
+	free(image);
 
 	if(ppp_pnm_write(output_file, kind, rows, cols, maxval, picture) != 0) {
 		fprintf(stderr, "An error occured when trying to write the processed picture to the output file!\n");
