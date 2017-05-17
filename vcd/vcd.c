@@ -81,7 +81,6 @@ static double seconds() {
 }
 
 int main(int argc, char* argv[]) {
-	int option;
 	bool execute_vcd  = false;
 	bool execute_sobel = false;
 	int option, rows, cols, maxval;
