@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 #include <sys/time.h>
+#include "ppp_pnm.h"
 
 /* liefert die Sekunden seit dem 01.01.1970 */
 static double seconds() {
@@ -12,9 +14,11 @@ static double seconds() {
 int main(int argc, char* argv[]) {
 	bool execute_vcd  = false;
 	bool execute_sobel = false;
+	int rows, cols, maxval;
+	enum pnm_kind kind;
 	char* output_file = "out.pgm";
 	char* input_file;
-	uint8_t picture;
+	uint8_t* picture;
     while ((option = getopt(argc,argv,"hvso:")) != -1) {
         switch(option) {
         	case 'h':
@@ -35,4 +39,46 @@ int main(int argc, char* argv[]) {
         }
     }
     input_file = argv[argc - 1];
+
+    if(!str_cmp(output_file, input_file)) {
+		bool abort_program = true;
+		bool waiting_for_answer = true;
+		char answer;
+		while(waiting_for_answer) {
+			printf("Warning: The input file is the same as the output file. Continuing will overwrite the input file permanently!\nContinue (y/n)? ");
+			scanf(" %c", &answer);
+			if(answer == 'y') {
+				abort_program = false;
+				waiting_for_answer = false;
+			}
+			if(answer == 'n') {
+				waiting_for_answer = false;
+			}
+		}
+		if(abort_program) {
+			printf("Program terminated.\n");
+			return 0;
+		}
+	}
+
+	picture = ppp_pnm_read(input_file, &kind, &rows, &cols, &maxval);
+	if(picture == NULL) {
+		fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"! If this is not the input file you had in mind please note that it has to be specified as the last argument.\n", input_file);
+		return 1;
+	}
+
+	if(execute_vcd) {
+		// execute vcd algorithm
+	}
+
+	if(execute_sobel) {
+		// execute sobel algorithm
+	}
+
+	if(ppp_pnm_write(output_file, kind, rows, cols, maxval, picture) != 0) {
+		fprintf(stderr, "An error occured when trying to write the processed picture to the output file!\n");
+		return 2;
+	}
+	free(picture);
+	return 0;
 }
