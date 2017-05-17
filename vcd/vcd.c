@@ -6,7 +6,7 @@
 #include <string.h>
 #include <sys/time.h>
 
-#include "mpi.h"
+//#include "mpi.h"
 
 #include "ppp_pnm.h"
 
@@ -18,6 +18,14 @@ double *convertImageToDouble(uint8_t *image, int rows, int columns, int maxcol)
 		image_double[i] = (double)image[i] / maxcol;
 	}
 	return image_double;
+}
+
+void convertDoubleToImage(double *image_double, uint8_t *image, int rows, int columns, int maxcol)
+{
+	for (int i = 0; i < rows * columns; i++)
+	{
+		image[i] = image_double[i] * maxcol;
+	}
 }
 
 static int N = 40;
@@ -76,9 +84,11 @@ int main(int argc, char* argv[]) {
 	int option;
 	bool execute_vcd  = false;
 	bool execute_sobel = false;
+	int rows, cols, maxval;
+	enum pnm_kind kind;
 	char* output_file = "out.pgm";
 	char* input_file;
-	uint8_t picture;
+	uint8_t* picture;
     while ((option = getopt(argc,argv,"hvso:")) != -1) {
         switch(option) {
         	case 'h':
@@ -99,4 +109,51 @@ int main(int argc, char* argv[]) {
         }
     }
     input_file = argv[argc - 1];
+    
+    if(!strcmp(output_file, input_file)) {
+		bool abort_program = true;
+		bool waiting_for_answer = true;
+		char answer;
+		while(waiting_for_answer) {
+			printf("Warning: The input file is the same as the output file. Continuing will overwrite the input file permanently!\nContinue (y/n)? ");
+			scanf(" %c", &answer);
+			if(answer == 'y') {
+				abort_program = false;
+				waiting_for_answer = false;
+			}
+			if(answer == 'n') {
+				waiting_for_answer = false;
+			}
+		}
+		if(abort_program) {
+			printf("Program terminated.\n");
+			return 0;
+		}
+	}
+
+	picture = ppp_pnm_read(input_file, &kind, &rows, &cols, &maxval);
+	if(picture == NULL) {
+		fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"! If this is not the input file you had in mind please note that it has to be specified as the last argument.\n", input_file);
+		return 1;
+	}
+	
+	double *image = convertImageToDouble(picture, rows, cols, maxval);
+	vcdNaive(image, rows, cols);
+
+	if(execute_vcd) {
+		// execute vcd algorithm
+	}
+
+	if(execute_sobel) {
+		// execute sobel algorithm
+	}
+	
+	convertDoubleToImage(image, picture, rows, cols, maxval);
+
+	if(ppp_pnm_write(output_file, kind, rows, cols, maxval, picture) != 0) {
+		fprintf(stderr, "An error occured when trying to write the processed picture to the output file!\n");
+		return 2;
+	}
+	free(picture);
+	return 0;
 }
