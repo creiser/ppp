@@ -25,10 +25,14 @@ void convertDoubleToImage(double *image_double, uint8_t *image, int rows, int co
 	for (int i = 0; i < rows * columns; i++)
 	{
 		image[i] = image_double[i] * maxcol;
+		if (image[i] < 0)
+			image[i] = 0;
+		else if (image[i] > maxcol)
+			image[i] = maxcol;
 	}
 }
 
-static int N = 40;
+static int N = 30;
 static double epsilon = 0.005;
 static double kappa = 30;
 static double delta_t = 0.1;
@@ -36,13 +40,13 @@ static double delta_t = 0.1;
 inline static double phi(double nu)
 {
 	double chi = nu / kappa;
-	return chi * exp(-(chi * chi) / 2);
+	return chi * exp(-(chi * chi) / 2.0);
 }
 
 inline static double xi(double nu)
 {
 	double psi = nu / (M_SQRT2 * kappa);
-	return M_SQRT1_2 * psi * exp(-(psi * psi) / 2);
+	return M_SQRT1_2 * psi * exp(-(psi * psi) / 2.0);
 }
 
 /*
@@ -54,36 +58,61 @@ void vcdNaive(double *image, int rows, int columns) {
         return r >= 0 && r <= rows &&
         	c >= 0 && c < columns ? image[r * columns + c] : 0;
     }
-
+    
+    inline double delta(int x, int y)
+	{
+		double d;
+		d =  phi(S(x + 1, y) - S(x, y));
+		d -= phi(S(x, y) - S(x - 1, y));
+		d += phi(S(x, y + 1) - S(x, y));
+		d -= phi(S(x, y) - S(x, y - 1));
+		d += xi(S(x + 1, y + 1) - S(x, y));
+		d -= xi(S(x, y) - S(x - 1 , y - 1));
+		d += xi(S(x - 1, y + 1) - S(x, y));
+		d -= xi(S(x, y) - S(x + 1, y - 1));
+		return d;
+	}
+    
+    /* Allocate a buffer to not overwrite pixels that are needed
+       later again in their original version.
+       
+       Note that each pixel needs 4 of the surrounding pixels
+       that otherwise would have been overwritten by a prior step.
+       
+       (left, up-left, up, up-right)
+       */
+	double *T = malloc(rows * columns * sizeof(double));
+	
+	printf("N: %d, kappa: %f, epsilon: %f, delta_t: %f\n", N, kappa, epsilon, delta_t);
+	
 	for (int i = 0; i < N; i++)
 	{
-		double delta;
 		int epsilon_exit = 1;
 		for (int y = 0; y < rows; ++y)
 		{
 			for (int x = 0; x < columns; ++x)
 			{
-				delta =  phi(S(x + 1, y) - S(x, y));
-				delta -= phi(S(x, y) - S(x - 1, y));
-				delta += phi(S(x, y + 1) - S(x, y));
-				delta -= phi(S(x, y) - S(x, y - 1));
-				delta += xi(S(x + 1, y + 1) - S(x, y));
-				delta -= xi(S(x, y) - S(x - 1 , y - 1));
-				delta += xi(S(x - 1, y + 1) - S(x, y));
-				delta -= xi(S(x, y) - S(x + 1, y - 1));
-				image[y * columns + x] = S(x, y) + kappa * delta_t * delta;
+				double delta_x_y = delta(x, y);
+				T[y * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
 				
-				if (fabs(delta) > epsilon &&
-				    x >= 1 && x < columns - 1 &&
-			        y >= 1 && y < rows - 1)
+				if (fabs(delta_x_y) > epsilon &&
+						x >= 1 && x < columns - 1 &&
+					    y >= 1 && y < rows - 1)
 				{
 					epsilon_exit = 0;
-				} 
+				}
 			}
 		}
+		double *temp = T;
+		T = image;
+		image = temp;
+		
+		printf("iteration: %d, epsilon_exit %d\n", i, epsilon_exit);
+		
 		if (epsilon_exit)
 			break;
-	}  
+	}
+	/*free(T);*/
 }
 
 /*
@@ -206,13 +235,19 @@ int main(int argc, char* argv[]) {
 		// execute sobel algorithm
 	}
 	
+	printf("1\n");
+	
 	convertDoubleToImage(image, picture, rows, cols, maxval);
-	free(image);
+	// free(image);
+	
+	printf("2\n");
 
 	if(ppp_pnm_write(output_file, kind, rows, cols, maxval, picture) != 0) {
 		fprintf(stderr, "An error occured when trying to write the processed picture to the output file!\n");
 		return 2;
 	}
 	free(picture);
+	
+	printf("3\n");
 	return 0;
 }
