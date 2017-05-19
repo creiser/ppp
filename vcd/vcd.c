@@ -24,11 +24,12 @@ void convertDoubleToImage(double *image_double, uint8_t *image, int rows, int co
 {
 	for (int i = 0; i < rows * columns; i++)
 	{
-		image[i] = (image_double[i] * maxcol) + 0.5;
-		if (image[i] < 0)
+		if (image_double[i] < 0.0)
 			image[i] = 0;
-		else if (image[i] > maxcol)
+		else if (image_double[i] > 1.0)
 			image[i] = maxcol;
+		else
+			image[i] = (image_double[i] * maxcol) + 0.5;
 	}
 }
 
