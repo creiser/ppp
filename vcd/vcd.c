@@ -120,34 +120,63 @@ void vcdNaive(double *image, int rows, int columns) {
 void vcdOptimized(double *image, int rows, int columns) {
 	inline double S(int c, int r)
     {
-        return r >= 0 && r <= rows &&
+        return r >= 0 && r < rows &&
         	c >= 0 && c < columns ? image[r * columns + c] : 0;
     }
 
 	double delta;
-	/* Allocate one row */
-	//double cachedVals = malloc(columns * sizeof(double));
-    for (int y = 0; y < rows; ++y)
-    {
-    	double prev = phi(S(0, y)); // consider: S(-1, y) = 0
-		for (int x = 0; x < columns; ++x)
-		{
-			delta = -prev;
-			prev = phi(S(x + 1, y) - S(x, y));
-			delta += prev;
-		
-			//delta =  phi(S(x + 1, y) - S(x, y));
-			//delta -= phi(S(x, y) - S(x - 1, y));
-			delta += phi(S(x, y + 1) - S(x, y));
-			delta -= phi(S(x, y) - S(x, y - 1));
-			delta += xi(S(x + 1, y + 1) - S(x, y));
-			delta -= xi(S(x, y) - S(x - 1 , y - 1));
-			delta += xi(S(x - 1, y + 1) - S(x, y));
-			delta -= xi(S(x, y) - S(x + 1, y - 1));
-			image[y * columns + x] = S(x, y) + kappa * delta_t * delta;
-		}
+    //intermediate store
+	double *T = malloc(rows * columns * sizeof(double));
+    //caches one row of phi() below current row
+    double *prev_y = malloc(columns * sizeof(double));
+    for (int i = 0; i < N; i++)
+	{
+        int epsilon_exit = 1;
+        //init prev_y
+        for (int i = 0; i < columns; ++i) {
+            prev_y[i] = phi(S(i, 0));
+        }
+        
+        for (int y = 0; y < rows; ++y)
+        {
+            double prev_x = phi(S(0, y)); // consider: S(-1, y) = 0
+            for (int x = 0; x < columns; ++x)
+            {
+                delta = -prev_x;
+                prev_x = phi(S(x + 1, y) - S(x, y));
+                delta += prev_x;
+                
+                delta -= prev_y[x];
+                prev_y[x] = phi(S(x, y + 1) - S(x, y));
+                delta += prev_y[x];
+            
+                //delta =  phi(S(x + 1, y) - S(x, y));
+                //delta -= phi(S(x, y) - S(x - 1, y));
+                //delta += phi(S(x, y + 1) - S(x, y));
+                //delta -= phi(S(x, y) - S(x, y - 1));
+                delta += xi(S(x + 1, y + 1) - S(x, y));
+                delta -= xi(S(x, y) - S(x - 1 , y - 1));
+                delta += xi(S(x - 1, y + 1) - S(x, y));
+                delta -= xi(S(x, y) - S(x + 1, y - 1));
+                T[y * columns + x] = S(x, y) + kappa * delta_t * delta;
+                
+                if (fabs(delta) > epsilon &&
+						x >= 1 && x < columns - 1 &&
+					    y >= 1 && y < rows - 1)
+				{
+					epsilon_exit = 0;
+				}
+            }
+        }
+    
+        double *temp = T;
+        T = image;
+        image = temp;
+        
+        if (epsilon_exit)
+			break;
     }
-    //free(cachedVals);
+    free(T);
 }
 
 /* liefert die Sekunden seit dem 01.01.1970 */
@@ -219,8 +248,8 @@ int main(int argc, char* argv[]) {
 	}
 	
 	double *image = convertImageToDouble(picture, rows, cols, maxval);
-	vcdNaive(image, rows, cols);
-	//vcdOptimized(image, rows, cols);
+	//vcdNaive(image, rows, cols);
+	vcdOptimized(image, rows, cols);
 
 	if(execute_vcd && !fast_vcd) {
 		// execute sequential, non-optimised vcd algorithm
