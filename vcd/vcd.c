@@ -32,7 +32,7 @@ void convertDoubleToImage(double *image_double, uint8_t *image, int rows, int co
 	}
 }
 
-static int N = 30;
+static int N = 40;
 static double epsilon = 0.005;
 static double kappa = 30;
 static double delta_t = 0.1;
@@ -55,7 +55,7 @@ inline static double xi(double nu)
 void vcdNaive(double *image, int rows, int columns) {
     inline double S(int c, int r)
     {
-        return r >= 0 && r <= rows &&
+        return r >= 0 && r < rows &&
         	c >= 0 && c < columns ? image[r * columns + c] : 0;
     }
     
@@ -106,8 +106,6 @@ void vcdNaive(double *image, int rows, int columns) {
 		double *temp = T;
 		T = image;
 		image = temp;
-		
-		printf("iteration: %d, epsilon_exit %d\n", i, epsilon_exit);
 		
 		if (epsilon_exit)
 			break;
