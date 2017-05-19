@@ -184,14 +184,14 @@ void vcdOptimized(double *image, int rows, int columns) {
 				delta_x_y = -prev;
 				prev = phi(S(x + 1, y) - S(x, y));
 				delta_x_y += prev;
-				// Subsitutes:
+				// Substitutes:
 				// 	  delta_x_y =  phi(S(x + 1, y) - S(x, y));
 				// 	  delta_x_y -= phi(S(x, y) - S(x - 1, y));
 				
 				delta_x_y -= up[x];
 				up[x] = phi(S(x, y + 1) - S(x, y));
 				delta_x_y += up[x];
-				// Subsitutes:
+				// Substitutes:
 				// 	  delta_x_y += phi(S(x, y + 1) - S(x, y));
 				// 	  delta_x_y -= phi(S(x, y) - S(x, y - 1));
 				
@@ -199,14 +199,14 @@ void vcdOptimized(double *image, int rows, int columns) {
 				prev_up_left = up_left[x];
 				up_left[x] = xi(S(x + 1, y + 1) - S(x, y));
 				delta_x_y += up_left[x];
-				// Subsitutes:
+				// Substitutes:
 				// 	  delta_x_y += xi(S(x + 1, y + 1) - S(x, y));
 				// 	  delta_x_y -= xi(S(x, y) - S(x - 1 , y - 1));
 				
 				delta_x_y -= up_right[x + 1];
 				up_right[x] = xi(S(x - 1, y + 1) - S(x, y));
 				delta_x_y += up_right[x];
-				// Subsitutes:
+				// Substitutes:
 				// 	  delta_x_y += xi(S(x - 1, y + 1) - S(x, y));
 				// 	  delta_x_y -= xi(S(x, y) - S(x + 1, y - 1));
 				
