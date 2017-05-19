@@ -115,39 +115,90 @@ void vcdNaive(double *image, int rows, int columns) {
 }
 
 /*
- * Cache previous row to reuse already calculated values.
+ * Cache previous row and left value to reuse already calculated values.
  */
 void vcdOptimized(double *image, int rows, int columns) {
-	inline double S(int c, int r)
+    inline double S(int c, int r)
     {
-        return r >= 0 && r <= rows &&
+        return r >= 0 && r < rows &&
         	c >= 0 && c < columns ? image[r * columns + c] : 0;
     }
-
-	double delta;
-	/* Allocate one row */
-	//double cachedVals = malloc(columns * sizeof(double));
-    for (int y = 0; y < rows; ++y)
-    {
-    	double prev = phi(S(0, y)); // consider: S(-1, y) = 0
+    
+    /* Allocate a buffer to not overwrite pixels that are needed
+       later again in their original version.
+       
+       Note that each pixel needs 4 of the surrounding pixels
+       that otherwise would have been overwritten by a prior step.
+       
+       (left, up-left, up, up-right)
+       */
+	double *T = malloc(rows * columns * sizeof(double));
+	
+	/* We can reuse up-left, up and up-right */
+	double *up = malloc(columns * sizeof(double));
+	double *up_left = malloc(columns * sizeof(double));
+	
+	printf("N: %d, kappa: %f, epsilon: %f, delta_t: %f\n", N, kappa, epsilon, delta_t);
+	
+	double delta_x_y;
+	for (int i = 0; i < N; i++)
+	{
 		for (int x = 0; x < columns; ++x)
 		{
-			delta = -prev;
-			prev = phi(S(x + 1, y) - S(x, y));
-			delta += prev;
-		
-			//delta =  phi(S(x + 1, y) - S(x, y));
-			//delta -= phi(S(x, y) - S(x - 1, y));
-			delta += phi(S(x, y + 1) - S(x, y));
-			delta -= phi(S(x, y) - S(x, y - 1));
-			delta += xi(S(x + 1, y + 1) - S(x, y));
-			delta -= xi(S(x, y) - S(x - 1 , y - 1));
-			delta += xi(S(x - 1, y + 1) - S(x, y));
-			delta -= xi(S(x, y) - S(x + 1, y - 1));
-			image[y * columns + x] = S(x, y) + kappa * delta_t * delta;
+			up[x] = phi(S(x, 0)); // consider: S(x, -1) = 0
+			up_left[x] = xi(S(x + 1, 0)); // consider: S(x - 1, -1) = 0
 		}
-    }
-    //free(cachedVals);
+	
+		int epsilon_exit = 1;
+		for (int y = 0; y < rows; ++y)
+		{
+			double prev = phi(S(0, y)); // consider: S(-1, y) = 0
+			double prev_up_left = xi(S(0, y)); // consider: S(-1, y - 1) = 0
+			for (int x = 0; x < columns; ++x)
+			{
+				delta_x_y = -prev;
+				prev = phi(S(x + 1, y) - S(x, y));
+				delta_x_y += prev;
+				//delta_x_y =  phi(S(x + 1, y) - S(x, y));
+				//delta_x_y -= phi(S(x, y) - S(x - 1, y));
+				
+				delta_x_y -= up[x];
+				up[x] = phi(S(x, y + 1) - S(x, y));
+				delta_x_y += up[x];
+				//delta_x_y += phi(S(x, y + 1) - S(x, y));
+				//delta_x_y -= phi(S(x, y) - S(x, y - 1));
+				
+				delta_x_y -= prev_up_left;
+				prev_up_left = up_left[x];
+				up_left[x] = xi(S(x + 1, y + 1) - S(x, y));
+				delta_x_y += up_left[x];
+				
+				//delta_x_y += xi(S(x + 1, y + 1) - S(x, y));
+				//delta_x_y -= xi(S(x, y) - S(x - 1 , y - 1));
+				
+				delta_x_y += xi(S(x - 1, y + 1) - S(x, y));
+				delta_x_y -= xi(S(x, y) - S(x + 1, y - 1));
+				
+				T[y * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
+				
+				if (fabs(delta_x_y) > epsilon &&
+						x >= 1 && x < columns - 1 &&
+					    y >= 1 && y < rows - 1)
+				{
+					epsilon_exit = 0;
+				}
+			}
+		}
+		double *temp = T;
+		T = image;
+		image = temp;
+		
+		printf("v6\n");
+		
+		if (epsilon_exit)
+			break;
+	}
+	/*free(T);*/
 }
 
 /* liefert die Sekunden seit dem 01.01.1970 */
@@ -219,8 +270,8 @@ int main(int argc, char* argv[]) {
 	}
 	
 	double *image = convertImageToDouble(picture, rows, cols, maxval);
-	vcdNaive(image, rows, cols);
-	//vcdOptimized(image, rows, cols);
+	//vcdNaive(image, rows, cols);
+	vcdOptimized(image, rows, cols);
 
 	if(execute_vcd && !fast_vcd) {
 		// execute sequential, non-optimised vcd algorithm
