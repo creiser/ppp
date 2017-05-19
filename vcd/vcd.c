@@ -111,7 +111,7 @@ void vcdNaive(double *image, int rows, int columns) {
 		if (epsilon_exit)
 			break;
 	}
-	/*free(T);*/
+	free(T);
 }
 
 /*
