@@ -144,14 +144,27 @@ void vcdOptimized(double *image, int rows, int columns) {
 	double delta_x_y;
 	for (int i = 0; i < N; i++)
 	{
-		for (int x = 0; x < columns; ++x)
+		// Handle x = 0 as special case. Reason is explained below.
+		up[0] = phi(S(0, 0));
+		up_left[0] = xi(S(1, 0));
+		// Fun fact: up_right[0] is never used and needn't be calculated therefore.
+		for (int x = 1; x < columns; ++x)
 		{
 			up[x] = phi(S(x, 0)); // consider: S(x, -1) = 0
 			up_left[x] = xi(S(x + 1, 0)); // consider: S(x, -1) = 0
 			
-			// Do this in a more efficient way, use up_left
-			up_right[x] = xi(S(x - 1, 0)); // consider: S(x, -1) = 0
+			// We have
+			// 	  up_left[x] = xi(S(x + 1, 0))
+			// and
+			// 	  up_right[x] = xi(S(x - 1, 0))
+			// so
+			//    up_right[x + 1] = xi(S(x - 1 + 1, 0)) = xi(S(x + 1 - 1, 0)) = up_left[x - 1]
+			// We start the loop therefore at x = 1 and handle the case
+			// x = 0 seperately
+			up_right[x + 1] = up_left[x - 1];
 		}
+		// For the first row up_right[columns] will be calculated twice, but
+		// thats only a tiny, tiny overhead
 	
 		int epsilon_exit = 1;
 		for (int y = 0; y < rows; ++y)
@@ -164,27 +177,31 @@ void vcdOptimized(double *image, int rows, int columns) {
 				delta_x_y = -prev;
 				prev = phi(S(x + 1, y) - S(x, y));
 				delta_x_y += prev;
-				//delta_x_y =  phi(S(x + 1, y) - S(x, y));
-				//delta_x_y -= phi(S(x, y) - S(x - 1, y));
+				// Subsitutes:
+				// 	  delta_x_y =  phi(S(x + 1, y) - S(x, y));
+				// 	  delta_x_y -= phi(S(x, y) - S(x - 1, y));
 				
 				delta_x_y -= up[x];
 				up[x] = phi(S(x, y + 1) - S(x, y));
 				delta_x_y += up[x];
-				//delta_x_y += phi(S(x, y + 1) - S(x, y));
-				//delta_x_y -= phi(S(x, y) - S(x, y - 1));
+				// Subsitutes:
+				// 	  delta_x_y += phi(S(x, y + 1) - S(x, y));
+				// 	  delta_x_y -= phi(S(x, y) - S(x, y - 1));
 				
 				delta_x_y -= prev_up_left;
 				prev_up_left = up_left[x];
 				up_left[x] = xi(S(x + 1, y + 1) - S(x, y));
 				delta_x_y += up_left[x];
-				//delta_x_y += xi(S(x + 1, y + 1) - S(x, y));
-				//delta_x_y -= xi(S(x, y) - S(x - 1 , y - 1));
+				// Subsitutes:
+				// 	  delta_x_y += xi(S(x + 1, y + 1) - S(x, y));
+				// 	  delta_x_y -= xi(S(x, y) - S(x - 1 , y - 1));
 				
 				delta_x_y -= up_right[x + 1];
 				up_right[x] = xi(S(x - 1, y + 1) - S(x, y));
 				delta_x_y += up_right[x];
-				//delta_x_y += xi(S(x - 1, y + 1) - S(x, y));
-				//delta_x_y -= xi(S(x, y) - S(x + 1, y - 1));
+				// Subsitutes:
+				// 	  delta_x_y += xi(S(x - 1, y + 1) - S(x, y));
+				// 	  delta_x_y -= xi(S(x, y) - S(x + 1, y - 1));
 				
 				T[y * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
 				
@@ -200,7 +217,7 @@ void vcdOptimized(double *image, int rows, int columns) {
 		T = image;
 		image = temp;
 		
-		printf("v7\n");
+		printf("v10\n");
 		
 		if (epsilon_exit)
 			break;
