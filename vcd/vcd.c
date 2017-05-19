@@ -10,6 +10,13 @@
 
 #include "ppp_pnm.h"
 
+inline double exp1(double x) {
+  x = 1.0 + x / 256.0;
+  x *= x; x *= x; x *= x; x *= x;
+  x *= x; x *= x; x *= x; x *= x;
+  return x;
+}
+
 double *convertImageToDouble(uint8_t *image, int rows, int columns, int maxcol)
 {
 	double *image_double = malloc(rows * columns * sizeof(double));
@@ -41,13 +48,13 @@ static double delta_t = 0.1;
 inline static double phi(double nu)
 {
 	double chi = nu / kappa;
-	return chi * exp(-(chi * chi) / 2.0);
+	return chi * exp1(-(chi * chi) / 2.0);
 }
 
 inline static double xi(double nu)
 {
 	double psi = nu / (M_SQRT2 * kappa);
-	return M_SQRT1_2 * psi * exp(-(psi * psi) / 2.0);
+	return M_SQRT1_2 * psi * exp1(-(psi * psi) / 2.0);
 }
 
 /*
@@ -217,8 +224,6 @@ void vcdOptimized(double *image, int rows, int columns) {
 		T = image;
 		image = temp;
 		
-		printf("v10\n");
-		
 		if (epsilon_exit)
 			break;
 	}
@@ -294,8 +299,10 @@ int main(int argc, char* argv[]) {
 	}
 	
 	double *image = convertImageToDouble(picture, rows, cols, maxval);
+	double vcdStart = seconds();
 	//vcdNaive(image, rows, cols);
 	vcdOptimized(image, rows, cols);
+	printf("vcd time: %f\n", seconds() - vcdStart);
 
 	if(execute_vcd && !fast_vcd) {
 		// execute sequential, non-optimised vcd algorithm
