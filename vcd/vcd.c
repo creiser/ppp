@@ -137,6 +137,7 @@ void vcdOptimized(double *image, int rows, int columns) {
 	/* We can reuse up-left, up and up-right */
 	double *up = malloc(columns * sizeof(double));
 	double *up_left = malloc(columns * sizeof(double));
+	double *up_right = malloc((columns + 1) * sizeof(double));
 	
 	printf("N: %d, kappa: %f, epsilon: %f, delta_t: %f\n", N, kappa, epsilon, delta_t);
 	
@@ -146,7 +147,10 @@ void vcdOptimized(double *image, int rows, int columns) {
 		for (int x = 0; x < columns; ++x)
 		{
 			up[x] = phi(S(x, 0)); // consider: S(x, -1) = 0
-			up_left[x] = xi(S(x + 1, 0)); // consider: S(x - 1, -1) = 0
+			up_left[x] = xi(S(x + 1, 0)); // consider: S(x, -1) = 0
+			
+			// Do this in a more efficient way, use up_left
+			up_right[x] = xi(S(x - 1, 0)); // consider: S(x, -1) = 0
 		}
 	
 		int epsilon_exit = 1;
@@ -154,6 +158,7 @@ void vcdOptimized(double *image, int rows, int columns) {
 		{
 			double prev = phi(S(0, y)); // consider: S(-1, y) = 0
 			double prev_up_left = xi(S(0, y)); // consider: S(-1, y - 1) = 0
+			up_right[columns] = xi(S(columns - 1, y));
 			for (int x = 0; x < columns; ++x)
 			{
 				delta_x_y = -prev;
@@ -172,12 +177,14 @@ void vcdOptimized(double *image, int rows, int columns) {
 				prev_up_left = up_left[x];
 				up_left[x] = xi(S(x + 1, y + 1) - S(x, y));
 				delta_x_y += up_left[x];
-				
 				//delta_x_y += xi(S(x + 1, y + 1) - S(x, y));
 				//delta_x_y -= xi(S(x, y) - S(x - 1 , y - 1));
 				
-				delta_x_y += xi(S(x - 1, y + 1) - S(x, y));
-				delta_x_y -= xi(S(x, y) - S(x + 1, y - 1));
+				delta_x_y -= up_right[x + 1];
+				up_right[x] = xi(S(x - 1, y + 1) - S(x, y));
+				delta_x_y += up_right[x];
+				//delta_x_y += xi(S(x - 1, y + 1) - S(x, y));
+				//delta_x_y -= xi(S(x, y) - S(x + 1, y - 1));
 				
 				T[y * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
 				
@@ -193,7 +200,7 @@ void vcdOptimized(double *image, int rows, int columns) {
 		T = image;
 		image = temp;
 		
-		printf("v6\n");
+		printf("v7\n");
 		
 		if (epsilon_exit)
 			break;
