@@ -46,8 +46,8 @@ inline static double phi(double nu)
 
 inline static double xi(double nu)
 {
-	double psi = nu / (M_SQRT2 * kappa);
-	return M_SQRT1_2 * psi * exp(-(psi * psi) / 2.0);
+	double psi = nu / kappa;
+	return psi / 2.0 * exp(-(psi * psi) / 4.0);
 }
 
 /*
