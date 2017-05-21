@@ -149,23 +149,19 @@ void vcdOptimized(double *image, int rows, int columns) {
                 delta -= prev_y[x];
                 prev_y[x] = phi(S(x, y + 1) - S(x, y));
                 delta += prev_y[x];
-            
-                //delta =  phi(S(x + 1, y) - S(x, y));
-                //delta -= phi(S(x, y) - S(x - 1, y));
-                //delta += phi(S(x, y + 1) - S(x, y));
-                //delta -= phi(S(x, y) - S(x, y - 1));
+                
                 delta += xi(S(x + 1, y + 1) - S(x, y));
                 delta -= xi(S(x, y) - S(x - 1 , y - 1));
                 delta += xi(S(x - 1, y + 1) - S(x, y));
                 delta -= xi(S(x, y) - S(x + 1, y - 1));
+                
                 T[y * columns + x] = S(x, y) + kappa * delta_t * delta;
                 
-                if (fabs(delta) > epsilon &&
-						x >= 1 && x < columns - 1 &&
-					    y >= 1 && y < rows - 1)
-				{
-					epsilon_exit = 0;
-				}
+                if (fabs(delta) > epsilon && x >= 1 && x < columns - 1 &&
+                    y >= 1 && y < rows - 1)
+                {
+                    epsilon_exit = 0;
+                }
             }
         }
     
@@ -176,6 +172,7 @@ void vcdOptimized(double *image, int rows, int columns) {
         if (epsilon_exit)
 			break;
     }
+    free(prev_y);
     free(T);
 }
 
