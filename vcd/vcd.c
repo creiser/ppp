@@ -49,13 +49,13 @@ static double delta_t = 0.1;
 inline static double phi(double nu)
 {
 	double chi = nu / kappa;
-	return chi * exp1(-(chi * chi) / 2.0);
+	return chi * exp1(-(chi * chi) * 0.5);
 }
 
 inline static double xi(double nu)
 {
 	double psi = nu / kappa;
-	return psi / 2.0 * exp1(-(psi * psi) / 4.0);
+	return psi * 0.5 * exp1(-(psi * psi) * 0.25);
 }
 
 /*
