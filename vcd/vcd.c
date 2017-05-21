@@ -5,10 +5,18 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
+#include <omp.h> 
 
 //#include "mpi.h"
 
 #include "ppp_pnm.h"
+
+inline double exp1(double x) {
+  x = 1.0 + x / 256.0;
+  x *= x; x *= x; x *= x; x *= x;
+  x *= x; x *= x; x *= x; x *= x;
+  return x;
+}
 
 double *convertImageToDouble(uint8_t *image, int rows, int columns, int maxcol)
 {
@@ -41,13 +49,13 @@ static double delta_t = 0.1;
 inline static double phi(double nu)
 {
 	double chi = nu / kappa;
-	return chi * exp(-(chi * chi) / 2.0);
+	return chi * exp1(-(chi * chi) / 2.0);
 }
 
 inline static double xi(double nu)
 {
 	double psi = nu / kappa;
-	return psi / 2.0 * exp(-(psi * psi) / 4.0);
+	return psi / 2.0 * exp1(-(psi * psi) / 4.0);
 }
 
 /*
@@ -115,18 +123,18 @@ void vcdNaive(double *image, int rows, int columns) {
 }
 
 /*
- * Cache previous row to reuse already calculated values.
+ * Cache previous row and left value to reuse already calculated values.
  */
 void vcdOptimized(double *image, int rows, int columns) {
-	inline double S(int c, int r)
+    inline double S(int c, int r)
     {
         return r >= 0 && r < rows &&
         	c >= 0 && c < columns ? image[r * columns + c] : 0;
     }
-
-	double delta;
+    
+    double delta;
     //intermediate store
-	double *T = malloc(rows * columns * sizeof(double));
+    double *T = malloc(rows * columns * sizeof(double));
     //caches one row of phi() below current row
     double *prev_y = malloc(columns * sizeof(double));
     for (int i = 0; i < N; i++)
@@ -175,6 +183,155 @@ void vcdOptimized(double *image, int rows, int columns) {
     free(prev_y);
     free(T);
 }
+
+/*
+ * Cache previous row and left value to reuse already calculated values.
+ */
+void vcdOptimizedParallel(double *image, int rows, int columns) {
+    inline double S(int c, int r)
+    {
+        return r >= 0 && r < rows &&
+        	c >= 0 && c < columns ? image[r * columns + c] : 0;
+    }
+    
+    /* Allocate a buffer to not overwrite pixels that are needed
+       later again in their original version.
+       
+       Note that each pixel needs 4 of the surrounding pixels
+       that otherwise would have been overwritten by a prior step.
+       
+       (left, up-left, up, up-right)
+       */
+	double *T = malloc(rows * columns * sizeof(double));
+	
+	printf("N: %d, kappa: %f, epsilon: %f, delta_t: %f\n", N, kappa, epsilon, delta_t);
+	
+	//printf("1\n");
+	//omp_set_num_threads(4);
+	
+	for (int i = 0; i < N; i++)
+	{
+		// Share epsilon_exit among the threads
+		int epsilon_exit = 1;
+		
+		
+		//int test_order[] = {2,0,3,4,1,6,5,7};
+		//for (int k = 0; k < 8; k++)
+		#pragma omp parallel shared(epsilon_exit)
+		{
+			double delta_x_y;
+			// To initalize the caching for each thread, we need to know about the assigned
+			// "blocks" for each thread. Idea: manually assign subareas of the image to the
+			// threads (MPI style).
+			// To be safe just use the exact same code as we used for MPI.
+			int num_threads = omp_get_num_threads();
+			//int num_threads = 8;
+			//printf("num_threads: %d\n", num_threads);
+			int *counts = malloc(2 * num_threads * sizeof(int));
+			int *displs = &counts[num_threads];
+			displs[0] = 0;
+			counts[0] = (rows / num_threads + (0 < rows % num_threads ? 1 : 0));
+			for (int j = 1; j < num_threads; j++) {
+				counts[j] = (rows / num_threads + (j < rows % num_threads ? 1 : 0));
+				displs[j] = displs[j - 1] + counts[j - 1];
+			}
+		
+			//int thread_num = test_order[k];
+			int thread_num = omp_get_thread_num();
+			int start = displs[thread_num];
+			int end = start + counts[thread_num];
+			
+			//printf("i: %d, thread_num: %d, pixel[0]: %f\n", i, thread_num, image[0]);
+			
+			// We can reuse up-left, up and up-right
+			// Every thread needs his own values
+			double *up = malloc(columns * sizeof(double));
+			double *up_left = malloc(columns * sizeof(double));
+			double *up_right = malloc((columns + 1) * sizeof(double));
+			
+			// We cannot do the little up_right[x + 1] = up_left[x - 1]
+			// trick from the sequential method here, since the second
+			// term does not equal 0 in general.
+			
+			// Fun fact: up_right[0] is never used and needn't be calculated therefore.
+			for (int x = 0; x < columns; ++x)
+			{
+				up[x] = phi(S(x, start) - S(x, start - 1)); // consider: S(x, -1) = 0
+				up_left[x] = xi(S(x + 1, start) - S(x, start - 1)); // consider: S(x, -1) = 0
+				up_right[x] = xi(S(x - 1, start) - S(x, start - 1));
+			}
+			
+			//printf("2\n");
+			//printf("start: %d, end: %d\n", start, end);
+			
+			// Nothing has to be changed here for the parallel version except of the
+			// start and end of the loop
+			for (int y = start; y < end; ++y)
+			{
+				double prev = phi(S(0, y)); // consider: S(-1, y) = 0
+				double prev_up_left = xi(S(0, y)); // consider: S(-1, y - 1) = 0
+				up_right[columns] = xi(S(columns - 1, y));
+				for (int x = 0; x < columns; ++x)
+				{
+					delta_x_y = -prev;
+					prev = phi(S(x + 1, y) - S(x, y));
+					delta_x_y += prev;
+					// Substitutes:
+					// 	  delta_x_y =  phi(S(x + 1, y) - S(x, y));
+					// 	  delta_x_y -= phi(S(x, y) - S(x - 1, y));
+			
+					delta_x_y -= up[x];
+					up[x] = phi(S(x, y + 1) - S(x, y));
+					delta_x_y += up[x];
+					// Substitutes:
+					// 	  delta_x_y += phi(S(x, y + 1) - S(x, y));
+					// 	  delta_x_y -= phi(S(x, y) - S(x, y - 1));
+			
+					delta_x_y -= prev_up_left;
+					prev_up_left = up_left[x];
+					up_left[x] = xi(S(x + 1, y + 1) - S(x, y));
+					delta_x_y += up_left[x];
+					// Substitutes:
+					// 	  delta_x_y += xi(S(x + 1, y + 1) - S(x, y));
+					// 	  delta_x_y -= xi(S(x, y) - S(x - 1 , y - 1));
+			
+					delta_x_y -= up_right[x + 1];
+					up_right[x] = xi(S(x - 1, y + 1) - S(x, y));
+					delta_x_y += up_right[x];
+					// Substitutes:
+					// 	  delta_x_y += xi(S(x - 1, y + 1) - S(x, y));
+					// 	  delta_x_y -= xi(S(x, y) - S(x + 1, y - 1));
+			
+					T[y * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
+			
+					if (fabs(delta_x_y) > epsilon &&
+							x >= 1 && x < columns - 1 &&
+							y >= 1 && y < rows - 1)
+					{
+						// epsilon_exit is never read inside the parallel area
+						// so we don't have to introduce a critical or atomic section
+						epsilon_exit = 0;
+					}
+				}
+			}
+			//printf("3\n");
+			
+			free(up);
+			free(up_left);
+			free(up_right);
+		}
+		double *temp = T;
+		T = image;
+		image = temp;
+		
+		printf("i: %d\n", i);
+		
+		if (epsilon_exit)
+			break;
+	}
+	/*free(T);*/
+}
+
 
 /* liefert die Sekunden seit dem 01.01.1970 */
 static double seconds() {
@@ -245,8 +402,12 @@ int main(int argc, char* argv[]) {
 	}
 	
 	double *image = convertImageToDouble(picture, rows, cols, maxval);
+
+	double vcdStart = seconds();
 	//vcdNaive(image, rows, cols);
 	vcdOptimized(image, rows, cols);
+	//vcdOptimizedParallel(image, rows, cols);
+	printf("vcd time: %f\n", seconds() - vcdStart);
 
 	if(execute_vcd && !fast_vcd) {
 		// execute sequential, non-optimised vcd algorithm
