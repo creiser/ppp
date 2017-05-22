@@ -7,7 +7,7 @@
 #include <sys/time.h>
 #include <omp.h> 
 
-//#include "mpi.h"
+#include "mpi.h"
 
 #include "ppp_pnm.h"
 
@@ -18,7 +18,7 @@ inline double exp1(double x) {
   return x;
 }
 
-double *convertImageToDouble(uint8_t *image, int rows, int columns, int maxcol)
+double *convertByteToDouble(uint8_t *image, int rows, int columns, int maxcol)
 {
 	double *image_double = malloc(rows * columns * sizeof(double));
 	for (int i = 0; i < rows * columns; i++)
@@ -28,7 +28,7 @@ double *convertImageToDouble(uint8_t *image, int rows, int columns, int maxcol)
 	return image_double;
 }
 
-void convertDoubleToImage(double *image_double, uint8_t *image, int rows, int columns, int maxcol)
+void convertDoubleToByte(double *image_double, uint8_t *image, int rows, int columns, int maxcol)
 {
 	for (int i = 0; i < rows * columns; i++)
 	{
@@ -232,7 +232,7 @@ void vcdOptimized(double *image, int rows, int columns) {
 }
 
 /*
- * Cache previous row and left value to reuse already calculated values.
+ * Parallel version that also uses already calculated values.
  */
 void vcdOptimizedParallel(double *image, int rows, int columns) {
     inline double S(int c, int r)
@@ -379,12 +379,353 @@ void vcdOptimizedParallel(double *image, int rows, int columns) {
 	/*free(T);*/
 }
 
+int np, self;
+
+/*
+ * myPart (and myNewPart) has one row above and one row below the
+ * actuall rows which are computed by the local process (as
+ * VCD requires values from the neighbouring rows).
+ */
+uint8_t *myPart;
+//uint8_t *myNewPart;
+int myRows;
+
+int *counts, *displs;
+
+void vcdDistributed(double *myPartDouble, int rows, int columns) {
+	// myPartDouble contains additional rows at the bottom and top
+	// so let's alter the code to transparently deal with that.
+	// The boundary checks for "r" are not nessecary anymore.
+    inline double S(int c, int r)
+    {
+        return  c >= 0 && c < columns ? myPartDouble[(r + 1) * columns + c] : 0;
+    }
+    
+    // Also reserve two additional rows for the swap buffer.
+	double *T = malloc((myRows + 2) * columns * sizeof(double));
+	
+	printf("N: %d, kappa: %f, epsilon: %f, delta_t: %f\n", N, kappa, epsilon, delta_t);
+	
+	//printf("1\n");
+	//omp_set_num_threads(1);
+	
+	int myRowOffset = displs[self] / columns;
+	
+	//fprintf(stderr, "self: %d, myRows: %d\n", self, myRows);
+	
+	MPI_Request topRequest, bottomRequest;
+	MPI_Status dummyStatus;
+	for (int i = 0; i < N; i++)
+	{
+		if (i != 0)
+		{
+			// Receive from top
+			if (self != 0)
+			{
+				//fprintf(stderr, "(top) trying to receive: %d\n", self);
+				MPI_Recv(myPartDouble, columns, MPI_DOUBLE, self - 1,
+					0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				MPI_Wait(&topRequest, &dummyStatus);
+			}
+				
+
+			// Receive from bottom
+			if (self != np - 1)
+			{
+				//fprintf(stderr, "(bot) trying to receive: %d\n", self);
+				MPI_Recv(&myPartDouble[(myRows + 1) * columns], columns, MPI_DOUBLE, self + 1,
+					0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				MPI_Wait(&bottomRequest, &dummyStatus);
+			}
+		}
+	
+		// Share epsilon_exit among the threads
+		int epsilon_exit = 1;
+		
+		//fprintf(stderr, "i: %d, self: %d, pixel[10000]: %f\n", i, self, myPartDouble[10000]);
+		
+		#pragma omp parallel shared(epsilon_exit)
+		{
+			//fprintf(stderr, "x1: %d\n", self);
+		
+			double delta_x_y;
+			// To initalize the caching for each thread, we need to know about the assigned
+			// "blocks" for each thread. Idea: manually assign subareas of the image to the
+			// threads (MPI style).
+			// To be safe just use the exact same code as we used for MPI.
+			int num_threads = omp_get_num_threads();
+			//printf("num_threads: %d\n", num_threads);
+			int *countsPara = malloc(2 * num_threads * sizeof(int));
+			int *displsPara = &countsPara[num_threads];
+			displsPara[0] = 0;
+			countsPara[0] = (myRows / num_threads + (0 < myRows % num_threads ? 1 : 0));
+			for (int j = 1; j < num_threads; j++) {
+				countsPara[j] = (myRows / num_threads + (j < myRows % num_threads ? 1 : 0));
+				displsPara[j] = displsPara[j - 1] + countsPara[j - 1];
+			}
+			
+			//fprintf(stderr, "x2: %d\n", self);
+		
+			int thread_num = omp_get_thread_num();
+			int start = displsPara[thread_num];
+			int end = start + countsPara[thread_num];
+			
+			fprintf(stderr, "self: %d, thread_num: %d\n", self, thread_num);
+			
+			//fprintf(stderr, "i: %d, thread_num: %d, pixel[0]: %f\n", i, thread_num, myPartDouble[0]);
+			
+			// We can reuse up-left, up and up-right
+			// Every thread needs his own values
+			double *up = malloc(columns * sizeof(double));
+			double *up_left = malloc(columns * sizeof(double));
+			double *up_right = malloc((columns + 1) * sizeof(double));
+			
+			// We cannot do the little up_right[x + 1] = up_left[x - 1]
+			// trick from the sequential method here, since the second
+			// term does not equal 0 in general.
+			
+			//fprintf(stderr, "x3: %d\n", self);
+			
+			// Fun fact: up_right[0] is never used and needn't be calculated therefore.
+			for (int x = 0; x < columns; ++x)
+			{
+				up[x] = phi(S(x, start) - S(x, start - 1)); // consider: S(x, -1) = 0
+				up_left[x] = xi(S(x + 1, start) - S(x, start - 1)); // consider: S(x, -1) = 0
+				up_right[x] = xi(S(x - 1, start) - S(x, start - 1));
+			}
+			
+			//printf("2\n");
+			//printf("start: %d, end: %d\n", start, end);
+			
+			// Nothing has to be changed here for the parallel version except of the
+			// start and end of the loop
+			for (int y = start; y < end; ++y)
+			{
+				double prev = phi(S(0, y)); // consider: S(-1, y) = 0
+				double prev_up_left = xi(S(0, y)); // consider: S(-1, y - 1) = 0
+				up_right[columns] = xi(S(columns - 1, y));
+				for (int x = 0; x < columns; ++x)
+				{
+					delta_x_y = -prev;
+					prev = phi(S(x + 1, y) - S(x, y));
+					delta_x_y += prev;
+					// Substitutes:
+					// 	  delta_x_y =  phi(S(x + 1, y) - S(x, y));
+					// 	  delta_x_y -= phi(S(x, y) - S(x - 1, y));
+			
+					delta_x_y -= up[x];
+					up[x] = phi(S(x, y + 1) - S(x, y));
+					delta_x_y += up[x];
+					// Substitutes:
+					// 	  delta_x_y += phi(S(x, y + 1) - S(x, y));
+					// 	  delta_x_y -= phi(S(x, y) - S(x, y - 1));
+			
+					delta_x_y -= prev_up_left;
+					prev_up_left = up_left[x];
+					up_left[x] = xi(S(x + 1, y + 1) - S(x, y));
+					delta_x_y += up_left[x];
+					// Substitutes:
+					// 	  delta_x_y += xi(S(x + 1, y + 1) - S(x, y));
+					// 	  delta_x_y -= xi(S(x, y) - S(x - 1 , y - 1));
+			
+					delta_x_y -= up_right[x + 1];
+					up_right[x] = xi(S(x - 1, y + 1) - S(x, y));
+					delta_x_y += up_right[x];
+					// Substitutes:
+					// 	  delta_x_y += xi(S(x - 1, y + 1) - S(x, y));
+					// 	  delta_x_y -= xi(S(x, y) - S(x + 1, y - 1));
+			
+					// (y + 1) because T has also an additional row at the top
+					T[(y + 1) * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
+			
+					// TODO: properly check for "inner" pixels
+					if (fabs(delta_x_y) > epsilon &&
+							x >= 1 && x < columns - 1 &&
+							y + myRowOffset >= 1 && y + myRowOffset < rows - 1)
+					{
+						// epsilon_exit is never read inside the parallel area
+						// so we don't have to introduce a critical or atomic section
+						epsilon_exit = 0;
+					}
+				}
+			}
+			//printf("3\n");
+			
+			//fprintf(stderr, "x4: %d\n", self);
+			
+			free(up);
+			free(up_left);
+			free(up_right);
+		}
+		
+		//fprintf(stderr, "trying to send: %d\n", self);
+		
+		// We send the first "real" row respectively the last "real" row,
+		// i.e. rows that were calculated by this process
+		// Send to top
+		if (self != 0)
+			MPI_Isend(&T[columns], columns, MPI_DOUBLE, self - 1,
+				0, MPI_COMM_WORLD, &topRequest);
+		// Send to bottom
+		if (self != np - 1)
+			MPI_Isend(&T[myRows * columns], columns, MPI_DOUBLE, self + 1,
+				0, MPI_COMM_WORLD, &bottomRequest);
+				
+		//fprintf(stderr, "performed sends: %d\n", self);
+		
+		//fprintf(stderr, "i: %d, self: %d, epsilon_exit: %d\n", i, self, epsilon_exit);
+		
+		int global_epsilon_exit;
+		MPI_Allreduce(&epsilon_exit, &global_epsilon_exit, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+		
+		//fprintf(stderr, "i: %d, self: %d, global_epsilon_exit: %d\n", i, self, global_epsilon_exit);
+		
+		//fprintf(stderr, "reduced: %d\n", self); 
+		
+		// possibily buggy because MPI implementation doesn't use its own
+		// send buffer
+		double *temp = T;
+		T = myPartDouble;
+		myPartDouble = temp;
+		
+		fprintf(stderr, "i: %d\n", i);
+		
+		if (global_epsilon_exit)
+			break;
+	}
+	/*free(T);*/
+}
+
+/*
+ * Out of memory handler.
+ */
+void Oom(void) {
+    fprintf(stderr, "Out of memory on processor %d\n", self);
+    MPI_Abort(MPI_COMM_WORLD, 1);
+}
+
+/*
+ * Put zeros in the first row in process 0 and
+ * in the last row in process np-1.
+ */
+void prepare_myPart(int columns) {
+    int x;
+    if (self == 0) {
+	for (x=0; x<columns; x++)
+	    myPart[x] = 0;
+    }
+    if (self == np-1) {
+	int mr1 = myRows+1;
+	for (x=0; x<columns; x++)
+	    myPart[mr1 * columns + x] = 0;
+    }
+}
+
 
 /* liefert die Sekunden seit dem 01.01.1970 */
 static double seconds() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
     return (double)tv.tv_sec + ((double)tv.tv_usec)/1000000.0;
+}
+
+/*
+ * Collect the pieces of the output image.
+ */
+void collect(int columns) {
+	for (int i = 0; i < np; i++)
+		printf("self: %d, counts[%d]: %d, displs[%d]: %d\n", self, i, counts[i], i, displs[i]);
+
+    //void *sendbuf = self == 0 ? MPI_IN_PLACE : myPart;
+    void *sendbuf = myPart;
+    MPI_Gatherv(sendbuf, counts[self], MPI_UINT8_T,
+                myPart, counts, displs, MPI_UINT8_T, 0, MPI_COMM_WORLD);
+}
+
+
+/*
+ * Callback function for ppp_pnm_load.
+ * We determine the part of the image to be processed
+ * by the local process and load one additional row
+ * above and below this part as the Sobel operator needs
+ * data from these two additional rows for its computations.
+ */
+uint8_t *partFn(enum pnm_kind kind, int rows, int columns,
+                int *offset, int *length)
+{
+    int i;
+
+    if (kind != PNM_KIND_PGM)
+	return NULL;
+
+    if (rows < np) {
+	if (self == 0)
+	    fprintf(stderr, "Cannot run with fewer rows in the image "
+		    "than processors.\n");
+	return NULL;
+    }
+
+    counts = malloc(2 * np * sizeof(int));
+    if (counts == NULL)
+	Oom();
+    displs = &counts[np];
+
+    /*
+     * The number of rows need not be a multiple of
+     * np. Therefore, the first  rows%np  processes get
+     *    ceil(rows/np)
+     * rows, and the remaining processes get
+     *    floor(rows/np)
+     * rows.
+     */
+    displs[0] = 0;
+    counts[0] = (rows/np + (0 < rows%np ? 1 : 0)) * columns;
+    for (i=1; i<np; i++) {
+	counts[i] = (rows/np + (i < rows%np ? 1 : 0)) * columns;
+	displs[i] = displs[i-1] + counts[i-1];
+    }
+
+    myRows = counts[self] / columns;
+
+    /*
+     * myPart has two additional rows, one at the top, one
+     * at the bottom of the local part of image.
+     */
+    myPart = malloc((self == 0 ? rows : (myRows + 2)) * columns * sizeof(uint8_t));
+    if (myPart == NULL) {
+	free(displs);
+	Oom();
+    }
+
+    /*
+     * Space for the result image part without additional
+     * rows at the top and bottom.
+     * On processor 0, we reserve space for the whole image
+     * so we can collect the parts with MPI_Gatherv into
+     * this space.
+     */
+    /*myNewPart = malloc((self == 0 ? rows : myRows) * columns * sizeof(int));
+    if (myNewPart == NULL) {
+	free(displs);
+	free(myPart);
+	Oom();
+    }*/
+
+    /*
+     * Offset and length of the part of the image to load
+     * in the local process, including the additional
+     * row at the top and/or the bottom.
+     */
+    *offset = self == 0 ? 0 : (displs[self]-columns);
+    if (np == 1)
+	*length = myRows * columns;
+    else
+	*length = (myRows + (self == 0 || self == np-1 ? 1 : 2)) * columns;
+
+    /* Add zeros in top row in process 0 and in bottom row in process np-1. */
+    prepare_myPart(columns);
+
+    return (self == 0 ? &myPart[columns] : myPart);
 }
 
 int main(int argc, char* argv[]) {
@@ -396,6 +737,10 @@ int main(int argc, char* argv[]) {
 	char* output_file = "out.pgm";
 	char* input_file;
 	uint8_t* picture;
+	
+	MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &np);
+    MPI_Comm_rank(MPI_COMM_WORLD, &self);
 
     while ((option = getopt(argc,argv,"hvfso:")) != -1) {
         switch(option) {
@@ -442,44 +787,44 @@ int main(int argc, char* argv[]) {
 		}
 	}
 
-	picture = ppp_pnm_read(input_file, &kind, &rows, &cols, &maxval);
+	//picture = ppp_pnm_read(input_file, &kind, &rows, &cols, &maxval);
+	picture = ppp_pnm_read_part(input_file, &kind, &rows, &cols, &maxval,
+			      partFn);
 	if(picture == NULL) {
 		fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"! If this is not the input file you had in mind please note that it has to be specified as the last argument.\n", input_file);
 		return 1;
 	}
 	
-	double *image = convertImageToDouble(picture, rows, cols, maxval);
+	double *myPartDouble = convertByteToDouble(myPart, myRows + 2, cols, maxval);
+	
 	double vcdStart = seconds();
 	//vcdNaive(image, rows, cols);
 	//vcdOptimized(image, rows, cols);
-	vcdOptimizedParallel(image, rows, cols);
-	printf("vcd time: %f\n", seconds() - vcdStart);
-
-	if(execute_vcd && !fast_vcd) {
-		// execute sequential, non-optimised vcd algorithm
-	}
-
-	if(execute_vcd && fast_vcd) {
-		// execute sequential, optimised vcd algorithm
-	}
-
-	if(execute_sobel) {
-		// execute sobel algorithm
-	}
+	//vcdOptimizedParallel(image, rows, cols);
+	vcdDistributed(myPartDouble, rows, cols);
+	fprintf(stderr, "vcd time: %f\n", seconds() - vcdStart);
 	
-	printf("1\n");
+	convertDoubleToByte(&myPartDouble[cols], myPart, myRows, cols, maxval);
 	
-	convertDoubleToImage(image, picture, rows, cols, maxval);
+	char debug_file[32];
+	snprintf (debug_file, 32, "out_%d.pgm", self);
+	ppp_pnm_write(debug_file, kind, myRows, cols, maxval, myPart);
+	
+	//fprintf(stderr, "z1\n");
+	// free(myPartDouble);
 	// free(image);
 	
-	printf("2\n");
+	collect(cols);
+	
+	//fprintf(stderr, "z2\n");
 
-	if(ppp_pnm_write(output_file, kind, rows, cols, maxval, picture) != 0) {
+	if (self == 0 && ppp_pnm_write(output_file, kind, rows, cols, maxval, myPart) != 0) {
 		fprintf(stderr, "An error occured when trying to write the processed picture to the output file!\n");
 		return 2;
 	}
-	free(picture);
+	//free(picture);
 	
-	printf("3\n");
+	MPI_Finalize();
+	
 	return 0;
 }
