@@ -6,10 +6,12 @@
 #include <string.h>
 #include <sys/time.h>
 #include <omp.h> 
-
-//#include "mpi.h"
+#include <mpi.h>
 
 #include "ppp_pnm.h"
+
+int self, np;
+int myRowCount;
 
 inline double exp1(double x) {
   x = 1.0 + x / 256.0;
@@ -41,6 +43,41 @@ void convertDoubleToImage(double *image_double, uint8_t *image, int rows, int co
 	}
 }
 
+/*
+ * Load a block of rows of an image on the current processor
+ */
+uint8_t *partfn(enum pnm_kind kind, int rows, int columns,
+                int *offset, int *length) {
+    if (kind != PNM_KIND_PGM)
+        return NULL;
+
+    /*
+     * The number of rows need not be a multiple of np.
+     * Therefore, the first rows%np  processes get
+     *    ceil(rows/np) * columns
+     * pixels, and the remaining processes get
+     *    floor(rows/np) * columns
+     * pixels.
+     */
+    if (self < rows%np) {
+        myRowCount = rows/np + 1;
+        *length = myRowCount * columns;
+        *offset = *length * self;
+    } else {
+        myRowCount = rows/np;
+        *length = myRowCount * columns;
+        *offset = *length * self + rows%np*columns;
+    }
+
+    printf("self=%d, offset=%d, length=%d, rowcount=%d\n", self, *offset, *length, myRowCount);
+
+    /*
+     * Allocate space for the image part.
+     * On processor 0 we allocate space for the whole result image.
+     */
+    return (uint8_t*)malloc((self == 0 ? rows*columns : *length) * sizeof(uint8_t));
+}
+
 static int N = 40;
 static double epsilon = 0.005;
 static double kappa = 30;
@@ -59,7 +96,7 @@ inline static double xi(double nu)
 }
 
 /*
- * Naive sequential VCD implementation.
+ * Naive sequential VCD implementation. Exercise (a)
  */
 void vcdNaive(double *image, int rows, int columns) {
     inline double S(int c, int r)
@@ -124,6 +161,7 @@ void vcdNaive(double *image, int rows, int columns) {
 
 /*
  * Cache previous row and left value to reuse already calculated values.
+ * Exercise (c)
  */
 void vcdOptimized(double *image, int rows, int columns) {
     inline double S(int c, int r)
@@ -182,6 +220,17 @@ void vcdOptimized(double *image, int rows, int columns) {
     }
     free(prev_y);
     free(T);
+}
+
+/*
+ * Naive parallel VCD implementation. Exercise (e)
+ */
+void vcdNaiveParallel(double *image, int rows, int columns) {
+    inline double S(int c, int r)
+    {
+        return r >= 0 && r < rows &&
+        	c >= 0 && c < columns ? image[r * columns + c] : 0;
+    }
 }
 
 /*
@@ -341,8 +390,8 @@ static double seconds() {
 }
 
 int main(int argc, char* argv[]) {
-	bool execute_vcd  = false;
 	bool fast_vcd = false;
+    bool parallel_vcd = false;
 	bool execute_sobel = false;
 	int option, rows, cols, maxval;
 	enum pnm_kind kind;
@@ -350,18 +399,22 @@ int main(int argc, char* argv[]) {
 	char* input_file;
 	uint8_t* picture;
 
-    while ((option = getopt(argc,argv,"hvfso:")) != -1) {
+    MPI_Init(&argc, &argv);
+    MPI_Comm_size(MPI_COMM_WORLD, &np);
+    MPI_Comm_rank(MPI_COMM_WORLD, &self);
+    
+    while ((option = getopt(argc,argv,"hfpso:")) != -1) {
         switch(option) {
         	case 'h':
-        		printf("[-hvfs][-o name_of_output_file] name_of_input_file\nThis program takes a picture in pgm format and processes it based on the given options.\nUse \"-h\" to display this description.\nUse \"-v\" to let the picture be manipulated by the vcd algortihm.\nUse \"-f\" if you want the program to use the faster version of the vcd algortihm if \"-v\" is set, too.\nUse \"-s\" to let the picture be manipulated by the sobel algortihm.\nIf both the \"-v\" and the \"-s\" options are set, the vcd algorithm will be executed first.\nUse \"-o\" to specify the file the processed image should be saved to. The default option ist \"out.pgm\".\nThe input file has to be given as the last argument.\n");
+        		printf("[-hfps][-o name_of_output_file] name_of_input_file\nThis program takes a picture in pgm format and processes it using the vcd algorithm based on the given options.\nUse \"-h\" to display this description.\nUse \"-f\" if you want the program to use the faster version of the vcd algorithm if \"-v\" is set, too.\nUse \"-p\" to execute the parallelized vcd version.\nCombine \"-f\" and \"-p\" as needed.\nUse \"-s\" to let the picture be manipulated by the sobel algorithm.\nIf both the \"-v\" and the \"-s\" options are set, the vcd algorithm will be executed first.\nUse \"-o\" to specify the file the processed image should be saved to. The default option ist \"out.pgm\".\nThe input file has to be given as the last argument.\n");
         		return 0;
-        	break;
-        	case 'v':
-        		execute_vcd = true;
         	break;
         	case 'f':
         		fast_vcd = true;
         	break;
+            case 'p':
+                parallel_vcd = true;
+            break;
         	case 's':
         		execute_sobel = true;
         	break;
@@ -394,46 +447,95 @@ int main(int argc, char* argv[]) {
 			return 0;
 		}
 	}
-
-	picture = ppp_pnm_read(input_file, &kind, &rows, &cols, &maxval);
-	if(picture == NULL) {
-		fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"! If this is not the input file you had in mind please note that it has to be specified as the last argument.\n", input_file);
-		return 1;
-	}
 	
-	double *image = convertImageToDouble(picture, rows, cols, maxval);
+    double *image;
+	double vcdStart;
+    if(!parallel_vcd) {
+        picture = ppp_pnm_read(input_file, &kind, &rows, &cols, &maxval);
+        
+        if(picture == NULL) {
+            fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"! If this is not the input file you had in mind please note that it has to be specified as the last argument.\n", input_file);
+            return 1;
+        }
+        
+        image = convertImageToDouble(picture, rows, cols, maxval);
 
-	double vcdStart = seconds();
-	//vcdNaive(image, rows, cols);
-	vcdOptimized(image, rows, cols);
-	//vcdOptimizedParallel(image, rows, cols);
-	printf("vcd time: %f\n", seconds() - vcdStart);
+        if(!fast_vcd){
+            // execute sequential, non-optimised vcd algorithm
+            vcdStart = seconds();
+            vcdNaive(image, rows, cols);
+            printf("vcd time: %f\n", seconds() - vcdStart);
+        } else {
+            // execute sequential, optimised vcd algorithm
+            vcdStart = seconds();
+            vcdOptimized(image, rows, cols);
+            printf("vcd time: %f\n", seconds() - vcdStart);
+        }
+        
+        if(execute_sobel) {
+            // execute sobel algorithm
+        }
+        
+        convertDoubleToImage(image, picture, rows, cols, maxval);
+    } else if (parallel_vcd) {
+        picture = ppp_pnm_read_part(input_file, &kind, &rows, &cols,
+                &maxval, partfn);
+                
+        if(picture == NULL) {
+            fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"! If this is not the input file you had in mind please note that it has to be specified as the last argument.\n", input_file);
+            return 1;
+        }
+                
+        image = convertImageToDouble(picture, myRowCount, cols, maxval);
 
-	if(execute_vcd && !fast_vcd) {
-		// execute sequential, non-optimised vcd algorithm
-	}
-
-	if(execute_vcd && fast_vcd) {
-		// execute sequential, optimised vcd algorithm
-	}
-
-	if(execute_sobel) {
-		// execute sobel algorithm
-	}
+        if (!fast_vcd) {
+            //execute parallel, non-optimised vcd algorithm
+            vcdStart = seconds();
+            vcdNaiveParallel(image, myRowCount, cols);
+            printf("vcd time: %f\n", seconds() - vcdStart);
+        } else {
+            // execute parallel, optimised vcd algorithm
+            vcdStart = seconds();
+            //vcdOptimizedParallel(image, rows, cols);
+            printf("vcd time: %f\n", seconds() - vcdStart);
+        }
+    
+        if(execute_sobel) {
+            // execute sobel algorithm
+        }
+    
+        convertDoubleToImage(image, picture, myRowCount, cols, maxval);
+        
+        int *displs = (int *) malloc(np*sizeof(int));
+        int *rcvCounts = (int *) malloc(np*sizeof(int));
+        int rCount, offset = 0;
+        
+        for (int i = 0; i < np; i++) {
+            displs[i] = offset;
+            
+            rCount = rows/np;
+            if (i < rows%np) {
+                rCount++;
+            }
+            
+            rcvCounts[i] = rCount * cols;
+            offset = offset + rCount * cols;
+        }
+        
+        MPI_Gatherv(picture, myRowCount*cols, MPI_UINT8_T, picture,
+            rcvCounts, displs, MPI_UINT8_T, 0, MPI_COMM_WORLD);
+    }
 	
-	printf("1\n");
-	
-	convertDoubleToImage(image, picture, rows, cols, maxval);
 	// free(image);
-	
-	printf("2\n");
-
-	if(ppp_pnm_write(output_file, kind, rows, cols, maxval, picture) != 0) {
-		fprintf(stderr, "An error occured when trying to write the processed picture to the output file!\n");
-		return 2;
-	}
+    
+    if(!parallel_vcd || (parallel_vcd && self == 0)) {
+        if(ppp_pnm_write(output_file, kind, rows, cols, maxval, picture) != 0) {
+            fprintf(stderr, "An error occured when trying to write the processed picture to the output file!\n");
+            return 2;
+        }
+    }
+    
 	free(picture);
-	
-	printf("3\n");
+	MPI_Finalize();
 	return 0;
 }
