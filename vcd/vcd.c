@@ -129,8 +129,6 @@ void vcdNaive(double *image, int rows, int columns) {
        */
 	double *T = malloc(rows * columns * sizeof(double));
 	
-	printf("N: %d, kappa: %f, epsilon: %f, delta_t: %f\n", N, kappa, epsilon, delta_t);
-	
 	for (int i = 0; i < N; i++)
 	{
 		int epsilon_exit = 1;
@@ -231,6 +229,75 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
         return r >= 0 && r < rows &&
         	c >= 0 && c < columns ? image[r * columns + c] : 0;
     }
+    
+    inline double delta(int x, int y)
+	{
+		double d;
+		d =  phi(S(x + 1, y) - S(x, y));
+		d -= phi(S(x, y) - S(x - 1, y));
+		d += phi(S(x, y + 1) - S(x, y));
+		d -= phi(S(x, y) - S(x, y - 1));
+		d += xi(S(x + 1, y + 1) - S(x, y));
+		d -= xi(S(x, y) - S(x - 1 , y - 1));
+		d += xi(S(x - 1, y + 1) - S(x, y));
+		d -= xi(S(x, y) - S(x + 1, y - 1));
+		return d;
+	}
+    
+	double *T = malloc(rows * columns * sizeof(double));
+    double *upperRowN = malloc(columns * sizeof(double));
+    double *lowerRowN = malloc(columns * sizeof(double));
+    MPI_Request rqS1, rqS2;
+	
+	for (int i = 0; i < N; i++)
+	{
+		int epsilon_exit = 1;
+        
+        if (self != 0) {
+            MPI_Isend(image[0], columns, MPI_DOUBLE, self-1, 0, MPI_COMM_WORLD,
+                    &rqS1);
+        }
+        
+        if (self != np-1){
+            MPI_Recv(lowerRowN, columns, MPI_DOUBLE, self+1, 0, MPI_COMM_WORLD,
+                    MPI_STATUS_IGNORE);
+        }
+        
+        if (self != np-1) {
+            MPI_Isend(image[rows-1], columns, MPI_DOUBLE, self+1, 0, MPI_COMM_WORLD,
+                    &rqS2);
+        }
+        
+        if (self != 0){
+            MPI_Recv(upperRowN, columns, MPI_DOUBLE, self-1, 0, MPI_COMM_WORLD,
+                    MPI_STATUS_IGNORE);
+        }
+        
+		for (int y = 0; y < rows; ++y)
+		{
+			for (int x = 0; x < columns; ++x)
+			{
+				double delta_x_y = delta(x, y);
+				T[y * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
+				
+				if (fabs(delta_x_y) > epsilon &&
+						x >= 1 && x < columns - 1 &&
+					    y >= 1 && y < rows - 1)
+				{
+					epsilon_exit = 0;
+				}
+			}
+		}
+		double *temp = T;
+		T = image;
+		image = temp;
+		
+        MPI_Allreduce(epsilon_exit, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+        
+		if (epsilon_exit)
+			break;
+	}
+	free(T);
 }
 
 /*
@@ -516,9 +583,11 @@ int main(int argc, char* argv[]) {
     
     if(!parallel_vcd) {
         convertDoubleToImage(image, picture, rows, cols, maxval);
+        free(image);
     } else {
         convertDoubleToImage(image, picture, myRowCount, cols, maxval);
-            
+        free(image)
+        
         int *displs = (int *) malloc(np*sizeof(int));
         int *rcvCounts = (int *) malloc(np*sizeof(int));
         int rCount, offset = 0;
@@ -538,8 +607,6 @@ int main(int argc, char* argv[]) {
         MPI_Gatherv(picture, myRowCount*cols, MPI_UINT8_T, picture,
             rcvCounts, displs, MPI_UINT8_T, 0, MPI_COMM_WORLD);
     }
-    
-	// free(image);
     
     if(!parallel_vcd || (parallel_vcd && self == 0)) {
         if(ppp_pnm_write(output_file, kind, rows, cols, maxval, picture) != 0) {
