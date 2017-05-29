@@ -344,6 +344,54 @@ void vcdOptimizedParallel(int rows, int columns) {
 int np, self;
 int myRows;
 int *counts, *displs;
+bool execute_sobel = false;
+double sobelC = 0.9;
+
+/*
+ * New pixel value according to Sobel for given values of sx and sy.
+ */
+inline static double T_sobel(double sx, double sy)
+{
+    double v = sobelC * hypot(sx,sy);
+    return v > 1.0 ? 1.0 : v;
+}
+
+/*
+ * Sobel with unrolling of the first and last iteration
+ * of the loop on x to avoid the case distinctions
+ * in the innermost loop.
+ */
+void sobel(const int columns, double *T)
+{
+    double (*image)[columns] = (double (*)[columns]) &myPartDouble[columns];
+    inline double S(int c, int r) { return image[r][c]; }
+
+	#pragma omp parallel for
+    for (int y = 0; y < myRows; ++y)
+    {
+        double sx, sy;
+
+		// x == 0
+		sx = 2*S(0,y-1) + S(1,y-1) - 2*S(0,y+1) - S(1,y+1);
+		sy = - S(1,y-1) - 2*S(1,y) - S(1,y+1);
+		T[(y + 1) * columns] = T_sobel(sx,sy);
+
+		for (int x = 1; x < columns - 1; ++x)
+		{
+			sx = S(x-1,y-1) + 2*S(x,y-1) + S(x+1,y-1)
+			-S(x-1,y+1) - 2*S(x,y+1) - S(x+1,y+1);
+			sy = S(x-1,y-1) + 2*S(x-1,y) + S(x-1,y+1)
+			    -S(x+1,y-1) - 2*S(x+1,y) - S(x+1,y+1);
+			T[(y + 1) * columns + x] = T_sobel(sx,sy);
+		}
+
+		// x == columns-1
+		sx = S(columns-2,y-1) + 2*S(columns-1,y-1)
+			-S(columns-2,y+1) - 2*S(columns-1,y+1);
+		sy = S(columns-2,y-1) + 2*S(columns-2,y) + S(columns-2,y+1);
+		T[(y + 1) * columns + columns - 1] = T_sobel(sx,sy);
+    }
+}
 
 void vcdDistributed(int rows, int columns) {
 	// myPartDouble contains additional rows at the bottom and top
@@ -501,6 +549,15 @@ void vcdDistributed(int rows, int columns) {
 		if (global_epsilon_exit)
 			break;
 	}
+	
+	if (execute_sobel)
+	{
+		sobel(columns, T);
+		double *temp = T;
+		T = myPartDouble;
+		myPartDouble = temp;
+	}
+	
 	free(T);
 }
 
@@ -630,9 +687,10 @@ uint8_t *partFn(enum pnm_kind kind, int rows, int columns,
 
 int main(int argc, char* argv[])
 {
-	bool execute_vcd  = false;
-	bool fast_vcd = false;
-	bool execute_sobel = false;
+	MPI_Init(&argc, &argv);
+	MPI_Comm_size(MPI_COMM_WORLD, &np);
+	MPI_Comm_rank(MPI_COMM_WORLD, &self);
+
 	int option, rows, cols, maxval;
 	enum pnm_kind kind;
 	char* output_file = "out.pgm";
@@ -641,17 +699,11 @@ int main(int argc, char* argv[])
 	
 	int implementation = VCD_OPTIMIZED_PARALLEL;
 	
-    while ((option = getopt(argc,argv,"hvfso:m:")) != -1) {
+    while ((option = getopt(argc,argv,"hso:m:")) != -1) {
         switch(option) {
         	case 'h':
-        		printf("[-hvfs][-o name_of_output_file] name_of_input_file\nThis program takes a picture in pgm format and processes it based on the given options.\nUse \"-h\" to display this description.\nUse \"-v\" to let the picture be manipulated by the vcd algortihm.\nUse \"-f\" if you want the program to use the faster version of the vcd algortihm if \"-v\" is set, too.\nUse \"-s\" to let the picture be manipulated by the sobel algortihm.\nIf both the \"-v\" and the \"-s\" options are set, the vcd algorithm will be executed first.\nUse \"-o\" to specify the file the processed image should be saved to. The default option ist \"out.pgm\".\nThe input file has to be given as the last argument.\n");
+        		printf("[-hs][-m implementation][-o name_of_output_file] name_of_input_file\nThis program takes a picture in pgm format and processes it based on the given options.\nUse \"-h\" to display this description.\nUse \"-v\" to let the picture be manipulated by the vcd algortihm.\nUse \"-f\" if you want the program to use the faster version of the vcd algortihm if \"-v\" is set, too.\nUse \"-s\" to let the picture be manipulated by the sobel algortihm.\nIf both the \"-v\" and the \"-s\" options are set, the vcd algorithm will be executed first.\nUse \"-o\" to specify the file the processed image should be saved to. The default option ist \"out.pgm\".\nThe input file has to be given as the last argument.\n");
         		return 0;
-        	break;
-        	case 'v':
-        		execute_vcd = true;
-        	break;
-        	case 'f':
-        		fast_vcd = true;
         	break;
         	case 's':
         		execute_sobel = true;
@@ -666,6 +718,9 @@ int main(int argc, char* argv[])
         }
     }
     input_file = argv[argc - 1];
+    
+    if (execute_sobel && implementation != VCD_DISTRIBUTED)
+    	fprintf(stderr, "Sobel will only be executed when the distributed implementation with \"-m 3\" is selected.\n");
     
     if(!strcmp(output_file, input_file)) {
 		bool abort_program = true;
@@ -691,9 +746,6 @@ int main(int argc, char* argv[])
 	double start = seconds();
 	if (implementation == VCD_DISTRIBUTED)
 	{
-		MPI_Init(&argc, &argv);
-		MPI_Comm_size(MPI_COMM_WORLD, &np);
-		MPI_Comm_rank(MPI_COMM_WORLD, &self);
 		if (np != 1)
 			picture = ppp_pnm_read_part(input_file, &kind, &rows, &cols, &maxval,
 					  partFn);
