@@ -7,8 +7,7 @@ import numpy as np
 def extract_time(output, section):
     return float(re.search(section + ': ([-+]?[0-9]*\.?[0-9]+)', output, re.IGNORECASE).group(1))
 
-
-def run_benchmark(name, cmds, num_iterations):
+def run_benchmark(name, row_ids, cmds, num_iterations):
 	execution_time =  []
 	execution_time_stdev = []
 	for cmd in cmds:
@@ -25,31 +24,43 @@ def run_benchmark(name, cmds, num_iterations):
 		print("mean: " + str(execution_time[-1]) +
 			" stdev: " + str(execution_time_stdev[-1]))
 
-	df = pd.DataFrame({'execution_time' : pd.Series(execution_time),
+	df = pd.DataFrame({'row_id:' : pd.Series(row_ids),
+					   'execution_time' : pd.Series(execution_time),
 		               'execution_time_stdev' : pd.Series(execution_time_stdev)})
 	df.to_csv(name + '.csv')
 	
-distributed_cmds = []
-for num_nodes in [2, 4, 6, 8, 16]:
-	distributed_cmds.append(
-		["srun",
-		 "-n " + str(num_nodes),
-		 "-N " + str(num_nodes),
-		 "--constraint=zeus", 
-		 "./vcd", "in.pgm", "-m 3"])
-#run_benchmark('distributed', distributed_cmds, 5);
-
 # This only uses the parallel version, but not the distributed one.
-# Zeus has only 10 cores, so maybe that's the reason why there is no further speedup
-# when requesting more than 10 cores.
-# Alternative: Try to use e.g. 8 cores from first node and another 8 cores from second node.		 
+# All cores should be taken from the same node. Zeus machines seem
+# to be the only one from the FIM cluster, that can provide 16 cores
+# as requested by the task description on a single machine, since Zeus
+# machines have 2 processors with 8 cores each.
+parallel_row_ids = []		 
 parallel_cmds = []
 for num_cores in [2, 4, 6, 8, 10, 12, 14, 16]:
+	parallel_row_ids.append(num_cores)
 	parallel_cmds.append(
 		["srun",
 		 "-n 1",
+		 "-n 1",
 		 "-c " + str(num_cores),
+		 "--cpu_bind=cores",
 		 "--constraint=zeus", 
 		 "./vcd", "in.pgm", "-m 2"])
-run_benchmark('parallel', parallel_cmds, 10);
+run_benchmark('parallel', parallel_row_ids, parallel_cmds, 20);
+
+# Here we also let the algorithm run on multiple nodes of the Zeus cluster.
+distributed_row_ids = []
+distributed_cmds = []
+for num_nodes in [2, 3, 4, 5, 6, 7, 8]:
+	for num_cores in [2, 4, 6, 8, 10, 12, 14, 16]:
+		distributed_row_ids.append(str(num_nodes) + ";" + str(num_cores))
+		distributed_cmds.append(
+			["srun",
+			 "-n " + str(num_nodes),
+			 "-N " + str(num_nodes),
+			 "-c " + str(num_cores),
+			 "--cpu_bind=cores",
+			 "--constraint=zeus", 
+			 "./vcd", "in.pgm", "-m 3"])		  
+run_benchmark('distributed', distributed_row_ids, distributed_cmds, 20);
 		 

@@ -454,6 +454,12 @@ void vcdDistributed(int rows, int columns) {
 			int end = start + countsPara[thread_num];
 			free(countsPara);
 			
+			if (!self && !thread_num && !i)
+				fprintf(stderr, "num threads: %d, assigned rows: %d/%d\n",
+					num_threads,
+					end - start,
+					rows);
+			
 			// We can reuse up-left, up and up-right
 			// Every thread needs his own values
 			double *up = malloc(columns * sizeof(double));
