@@ -696,25 +696,28 @@ int main(int argc, char* argv[])
 	char* output_file = "out.pgm";
 	char* input_file;
 	uint8_t* picture;
-	
 	int implementation = VCD_OPTIMIZED_PARALLEL;
 	
-    while ((option = getopt(argc,argv,"hso:m:")) != -1) {
+    while ((option = getopt(argc,argv,"hso:m:t:")) != -1) {
         switch(option) {
         	case 'h':
-        		printf("[-hs][-m implementation][-o name_of_output_file] name_of_input_file\nThis program takes a picture in pgm format and processes it based on the given options.\nUse \"-h\" to display this description.\nUse \"-v\" to let the picture be manipulated by the vcd algortihm.\nUse \"-f\" if you want the program to use the faster version of the vcd algortihm if \"-v\" is set, too.\nUse \"-s\" to let the picture be manipulated by the sobel algortihm.\nIf both the \"-v\" and the \"-s\" options are set, the vcd algorithm will be executed first.\nUse \"-o\" to specify the file the processed image should be saved to. The default option ist \"out.pgm\".\nThe input file has to be given as the last argument.\n");
+        		printf("[-hs][-m implementation][-t number_of_omp_threads][-o name_of_output_file] name_of_input_file\nThis program takes a picture in pgm format and processes it based on the given options.\nUse \"-h\" to display this description.\nUse \"-v\" to let the picture be manipulated by the vcd algortihm.\nUse \"-f\" if you want the program to use the faster version of the vcd algortihm if \"-v\" is set, too.\nUse \"-s\" to let the picture be manipulated by the sobel algortihm.\nIf both the \"-v\" and the \"-s\" options are set, the vcd algorithm will be executed first.\nUse \"-o\" to specify the file the processed image should be saved to. The default option ist \"out.pgm\".\nThe input file has to be given as the last argument.\n");
         		return 0;
-        	break;
+        		break;
         	case 's':
         		execute_sobel = true;
-        	break;
+        		break;
         	case 'o':
         		output_file = optarg;
+    			break;
     		case 'm':
     			implementation = atoi(optarg);
-        	break;
+    			break;
+			case 't':
+				omp_set_num_threads(atoi(optarg));
+        		break;
         	default:
-        	break;
+        		break;
         }
     }
     input_file = argv[argc - 1];
