@@ -556,7 +556,7 @@ void vcdDistributed(int rows, int columns) {
 			// i.e. rows that were calculated by this process
 			// Note that we can only receive and send simultaenously without
 			// an additional buffer, because rows are send and received from/to different
-			// loations.
+			// memory loations.
 			// The outmost rows (the additional rows) are received, while the
 			// row below respectively above the outmost rows are sent.
 		
