@@ -29,6 +29,14 @@ def run_benchmark(name, row_ids, cmds, num_iterations):
 		               'execution_time_stdev' : pd.Series(execution_time_stdev)})
 	df.to_csv(name + '.csv')
 	
+# Sequential as base line
+run_benchmark('sequential', [0], [[
+	     "srun",
+		 "-n 1",
+		 "-N 1",
+		 "--constraint=zeus", 
+		 "./vcd", "in.pgm", "-m 1"]], 20);
+	
 # This only uses the parallel version, but not the distributed one.
 # All cores should be taken from the same node. Zeus machines seem
 # to be the only one from the FIM cluster, that can provide 16 cores
@@ -41,7 +49,7 @@ for num_cores in [2, 4, 6, 8, 10, 12, 14, 16]:
 	parallel_cmds.append(
 		["srun",
 		 "-n 1",
-		 "-n 1",
+		 "-N 1",
 		 "-c " + str(num_cores),
 		 "--cpu_bind=cores",
 		 "--constraint=zeus", 
