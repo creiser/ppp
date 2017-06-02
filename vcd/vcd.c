@@ -242,6 +242,31 @@ void vcdOptimizedParallel(int rows, int columns) {
     
 	double *T = malloc(rows * columns * sizeof(double));
 	
+	// To initalize the caching for each thread, we need to know about the assigned
+	// "blocks" for each thread. Idea: manually assign subareas of the image to the
+	// threads (MPI style).
+	// To be safe just use the exact same code as we used for MPI.
+	int num_threads;
+	#pragma omp parallel
+	{
+		num_threads = omp_get_num_threads();
+	}
+	int *counts = malloc(2 * num_threads * sizeof(int));
+	int *displs = &counts[num_threads];
+	displs[0] = 0;
+	counts[0] = (rows / num_threads + (0 < rows % num_threads ? 1 : 0));
+	for (int j = 1; j < num_threads; j++) {
+		counts[j] = (rows / num_threads + (j < rows % num_threads ? 1 : 0));
+		displs[j] = displs[j - 1] + counts[j - 1];
+	}
+	
+	// We can reuse up-left, up and up-right
+	// Every thread needs his own values.
+	// Allocate memory for each thread seperately.
+	double *all_up = malloc(columns * sizeof(double) * num_threads);
+	double *all_up_left = malloc(columns * sizeof(double) * num_threads);
+	double *all_up_right = malloc((columns + 1) * sizeof(double) * num_threads);
+	
 	for (int i = 0; i < N; i++)
 	{
 		// Share epsilon_exit among the threads
@@ -249,29 +274,15 @@ void vcdOptimizedParallel(int rows, int columns) {
 		#pragma omp parallel shared(epsilon_exit)
 		{
 			double delta_x_y;
-			// To initalize the caching for each thread, we need to know about the assigned
-			// "blocks" for each thread. Idea: manually assign subareas of the image to the
-			// threads (MPI style).
-			// To be safe just use the exact same code as we used for MPI.
-			int num_threads = omp_get_num_threads();
-			int *counts = malloc(2 * num_threads * sizeof(int));
-			int *displs = &counts[num_threads];
-			displs[0] = 0;
-			counts[0] = (rows / num_threads + (0 < rows % num_threads ? 1 : 0));
-			for (int j = 1; j < num_threads; j++) {
-				counts[j] = (rows / num_threads + (j < rows % num_threads ? 1 : 0));
-				displs[j] = displs[j - 1] + counts[j - 1];
-			}
+			
 			int thread_num = omp_get_thread_num();
 			int start = displs[thread_num];
 			int end = start + counts[thread_num];
-			free(counts);
 			
-			// We can reuse up-left, up and up-right
-			// Every thread needs his own values
-			double *up = malloc(columns * sizeof(double));
-			double *up_left = malloc(columns * sizeof(double));
-			double *up_right = malloc((columns + 1) * sizeof(double));
+			// Assign each thread its own cache.
+			double *up = &all_up[thread_num * columns];
+			double *up_left = &all_up_left[thread_num * columns];
+			double *up_right = &all_up_right[thread_num * (columns + 1)];
 			
 			// We cannot do the little up_right[x + 1] = up_left[x - 1]
 			// trick from the sequential method here, since the second
@@ -324,11 +335,7 @@ void vcdOptimizedParallel(int rows, int columns) {
 						epsilon_exit = 0;
 					}
 				}
-			}
-			
-			free(up);
-			free(up_left);
-			free(up_right);
+			}			
 		}
 		double *temp = T;
 		T = myPartDouble;
@@ -337,6 +344,11 @@ void vcdOptimizedParallel(int rows, int columns) {
 		if (epsilon_exit)
 			break;
 	}
+	
+	free(all_up);
+	free(all_up_left);
+	free(all_up_right);
+	free(counts);
 	free(T);
 }
 
@@ -431,6 +443,27 @@ void vcdDistributed(int rows, int columns) {
 	
 	int myRowOffset = displs[self] / columns;
 	
+	// To initalize the caching for each thread, we need to know about the assigned
+	// "blocks" for each thread. Idea: manually assign subareas of the image to the
+	// threads (MPI style).
+	// To be safe just use the exact same code as we used for MPI.
+	int num_threads;
+	#pragma omp parallel
+	{
+		num_threads = omp_get_num_threads();
+	}
+	int *countsPara = malloc(2 * num_threads * sizeof(int));
+	int *displsPara = &countsPara[num_threads];
+	displsPara[0] = 0;
+	countsPara[0] = (myRows / num_threads + (0 < myRows % num_threads ? 1 : 0));
+	for (int j = 1; j < num_threads; j++) {
+		countsPara[j] = (myRows / num_threads + (j < myRows % num_threads ? 1 : 0));
+		displsPara[j] = displsPara[j - 1] + countsPara[j - 1];
+	}
+	double *all_up = malloc(columns * sizeof(double) * num_threads);
+	double *all_up_left = malloc(columns * sizeof(double) * num_threads);
+	double *all_up_right = malloc((columns + 1) * sizeof(double) * num_threads);
+	
 	MPI_Request topRequest, bottomRequest;
 	MPI_Status dummyStatus;
 	for (int i = 0; i < N; i++)
@@ -440,23 +473,10 @@ void vcdDistributed(int rows, int columns) {
 		#pragma omp parallel shared(epsilon_exit)
 		{
 			double delta_x_y;
-			// To initalize the caching for each thread, we need to know about the assigned
-			// "blocks" for each thread. Idea: manually assign subareas of the image to the
-			// threads (MPI style).
-			// To be safe just use the exact same code as we used for MPI.
-			int num_threads = omp_get_num_threads();
-			int *countsPara = malloc(2 * num_threads * sizeof(int));
-			int *displsPara = &countsPara[num_threads];
-			displsPara[0] = 0;
-			countsPara[0] = (myRows / num_threads + (0 < myRows % num_threads ? 1 : 0));
-			for (int j = 1; j < num_threads; j++) {
-				countsPara[j] = (myRows / num_threads + (j < myRows % num_threads ? 1 : 0));
-				displsPara[j] = displsPara[j - 1] + countsPara[j - 1];
-			}
+			
 			int thread_num = omp_get_thread_num();
 			int start = displsPara[thread_num];
 			int end = start + countsPara[thread_num];
-			free(countsPara);
 			
 			if (!self && !thread_num && !i)
 				fprintf(stderr, "num threads: %d, assigned rows: %d/%d\n",
@@ -464,11 +484,9 @@ void vcdDistributed(int rows, int columns) {
 					end - start,
 					rows);
 			
-			// We can reuse up-left, up and up-right
-			// Every thread needs his own values
-			double *up = malloc(columns * sizeof(double));
-			double *up_left = malloc(columns * sizeof(double));
-			double *up_right = malloc((columns + 1) * sizeof(double));
+			double *up = &all_up[thread_num * columns];
+			double *up_left = &all_up_left[thread_num * columns];
+			double *up_right = &all_up_right[thread_num * (columns + 1)];
 			
 			// We cannot do the little up_right[x + 1] = up_left[x - 1]
 			// trick from the sequential method here, since the second
@@ -525,10 +543,6 @@ void vcdDistributed(int rows, int columns) {
 					}
 				}
 			}
-			
-			free(up);
-			free(up_left);
-			free(up_right);
 		}
 		
 		// If no process has made a change greater epsilon, i.e. epsilon_exit is 1 for all
@@ -590,7 +604,11 @@ void vcdDistributed(int rows, int columns) {
 		myPartDouble = temp;
 	}
 	
-	free(T);
+	free(all_up);
+	free(all_up_left);
+	free(all_up_right);
+	free(countsPara);
+	free(T);		
 }
 
 /*
