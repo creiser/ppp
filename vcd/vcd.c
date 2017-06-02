@@ -393,6 +393,24 @@ void sobel(const int columns, double *T)
     }
 }
 
+/*
+ * Put zeros in the first row in process 0 and
+ * in the last row in process np-1.
+ */
+void prepare_myPart(double *buffer, int columns) {
+    if (self == 0)
+    {
+		for (int x = 0; x < columns; x++)
+			buffer[x] = 0.0;
+    }
+    if (self == np-1)
+    {
+		int mr1 = myRows+1;
+		for (int x = 0; x < columns; x++)
+			buffer[mr1 * columns + x] = 0.0;
+    }
+}
+
 void vcdDistributed(int rows, int columns) {
 	// myPartDouble contains additional rows at the bottom and top
 	// so let's alter the code to transparently deal with that.
@@ -405,32 +423,18 @@ void vcdDistributed(int rows, int columns) {
     // Also reserve two additional rows for the swap buffer.
 	double *T = malloc((myRows + 2) * columns * sizeof(double));
 	
+	// Add zeros in top row in process 0 and in bottom row in process np-1.
+	// The first/last process also has to write zeros to the first row/last row
+	// of T, otherwise we read from uninitalized memory after the swap.
+	prepare_myPart(myPartDouble, columns);
+	prepare_myPart(T, columns);
+	
 	int myRowOffset = displs[self] / columns;
 	
 	MPI_Request topRequest, bottomRequest;
 	MPI_Status dummyStatus;
 	for (int i = 0; i < N; i++)
 	{
-		// In the first iteration we already have the values of the rows above and below.
-		if (i != 0)
-		{
-			// Receive from top
-			if (self != 0)
-			{
-				MPI_Recv(myPartDouble, columns, MPI_DOUBLE, self - 1,
-					0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-				MPI_Wait(&topRequest, &dummyStatus);
-			}
-				
-			// Receive from bottom
-			if (self != np - 1)
-			{
-				MPI_Recv(&myPartDouble[(myRows + 1) * columns], columns, MPI_DOUBLE, self + 1,
-					0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-				MPI_Wait(&bottomRequest, &dummyStatus);
-			}
-		}
-	
 		// Share epsilon_exit among the threads
 		int epsilon_exit = 1;
 		#pragma omp parallel shared(epsilon_exit)
@@ -527,32 +531,54 @@ void vcdDistributed(int rows, int columns) {
 			free(up_right);
 		}
 		
-		// We send the first "real" row respectively the last "real" row,
-		// i.e. rows that were calculated by this process
-		// Note that we can only receive and send simultaenously without
-		// an additional buffer, because different rows are send and received.
-		// The outmost rows (the additional rows) are received, while the
-		// row below respectively above the outmost rows are sent.
-		
-		// Send to top
-		if (self != 0)
-			MPI_Isend(&T[columns], columns, MPI_DOUBLE, self - 1,
-				0, MPI_COMM_WORLD, &topRequest);
-		// Send to bottom
-		if (self != np - 1)
-			MPI_Isend(&T[myRows * columns], columns, MPI_DOUBLE, self + 1,
-				0, MPI_COMM_WORLD, &bottomRequest);
-		
 		// If no process has made a change greater epsilon, i.e. epsilon_exit is 1 for all
 		// processes, then we early terminate.		
 		int global_epsilon_exit;
 		MPI_Allreduce(&epsilon_exit, &global_epsilon_exit, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
 		
+		if (!global_epsilon_exit)
+		{
+			// We send the first "real" row respectively the last "real" row,
+			// i.e. rows that were calculated by this process
+			// Note that we can only receive and send simultaenously without
+			// an additional buffer, because rows are send and received from/to different
+			// loations.
+			// The outmost rows (the additional rows) are received, while the
+			// row below respectively above the outmost rows are sent.
+		
+			// Send to top
+			if (self != 0)
+				MPI_Isend(&T[columns], columns, MPI_DOUBLE, self - 1,
+					0, MPI_COMM_WORLD, &topRequest);
+			// Send to bottom
+			if (self != np - 1)
+				MPI_Isend(&T[myRows * columns], columns, MPI_DOUBLE, self + 1,
+					0, MPI_COMM_WORLD, &bottomRequest);
+		}
+		
 		double *temp = T;
 		T = myPartDouble;
 		myPartDouble = temp;
 		
-		if (global_epsilon_exit)
+		if (!global_epsilon_exit)
+		{
+			// Receive from top
+			if (self != 0)
+			{
+				MPI_Recv(myPartDouble, columns, MPI_DOUBLE, self - 1,
+					0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				MPI_Wait(&topRequest, &dummyStatus);
+			}
+				
+			// Receive from bottom
+			if (self != np - 1)
+			{
+				MPI_Recv(&myPartDouble[(myRows + 1) * columns], columns, MPI_DOUBLE, self + 1,
+					0, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
+				MPI_Wait(&bottomRequest, &dummyStatus);
+			}
+		}
+		else
 			break;
 	}
 	
@@ -573,23 +599,6 @@ void vcdDistributed(int rows, int columns) {
 void Oom(void) {
     fprintf(stderr, "Out of memory on processor %d\n", self);
     MPI_Abort(MPI_COMM_WORLD, 1);
-}
-
-/*
- * Put zeros in the first row in process 0 and
- * in the last row in process np-1.
- */
-void prepare_myPart(int columns) {
-    int x;
-    if (self == 0) {
-	for (x=0; x<columns; x++)
-	    myPart[x] = 0;
-    }
-    if (self == np-1) {
-	int mr1 = myRows+1;
-	for (x=0; x<columns; x++)
-	    myPart[mr1 * columns + x] = 0;
-    }
 }
 
 /* liefert die Sekunden seit dem 01.01.1970 */
@@ -680,10 +689,20 @@ uint8_t *partFn(enum pnm_kind kind, int rows, int columns,
     else
 		*length = (myRows + (self == 0 || self == np-1 ? 1 : 2)) * columns;
 
-    /* Add zeros in top row in process 0 and in bottom row in process np-1. */
-    prepare_myPart(columns);
-
     return (self == 0 ? &myPart[columns] : myPart);
+}
+
+void usage()
+{
+	fprintf(stderr,
+		"[-hs][-m implementation][-t number_of_omp_threads][-o name_of_output_file] name_of_input_file\n"
+		"This program takes a picture in pgm format and executes the VCD algorithm on it based on the given options.\n"
+		"With the \"-m\" option the implementation can be specified with an integer.\n"
+		"Possible values are 0: naive, 1: optimized, 2: parallel and 3: distributed\n" 
+		"Use \"-h\" to display this description.\n"
+		"Use \"-s\" to let the picture be additonally manipulated by the sobel algortihm.\n"
+		"Use \"-o\" to specify the file the processed image should be saved to. The default setting is \"out.pgm\".\n"
+		"The input file has to be given as the last argument.\n");
 }
 
 #define VCD_NAIVE 0
@@ -707,7 +726,7 @@ int main(int argc, char* argv[])
     while ((option = getopt(argc,argv,"hso:m:t:")) != -1) {
         switch(option) {
         	case 'h':
-        		printf("[-hs][-m implementation][-t number_of_omp_threads][-o name_of_output_file] name_of_input_file\nThis program takes a picture in pgm format and processes it based on the given options.\nUse \"-h\" to display this description.\nUse \"-v\" to let the picture be manipulated by the vcd algortihm.\nUse \"-f\" if you want the program to use the faster version of the vcd algortihm if \"-v\" is set, too.\nUse \"-s\" to let the picture be manipulated by the sobel algortihm.\nIf both the \"-v\" and the \"-s\" options are set, the vcd algorithm will be executed first.\nUse \"-o\" to specify the file the processed image should be saved to. The default option ist \"out.pgm\".\nThe input file has to be given as the last argument.\n");
+        		usage();
         		return 0;
         		break;
         	case 's':
@@ -726,17 +745,24 @@ int main(int argc, char* argv[])
         		break;
         }
     }
+    if (argv[optind] == NULL)
+    {
+		usage();
+		return 1;
+	}
     input_file = argv[argc - 1];
     
     if (execute_sobel && implementation != VCD_DISTRIBUTED)
-    	fprintf(stderr, "Sobel will only be executed when the distributed implementation with \"-m 3\" is selected.\n");
+    	fprintf(stderr, "Sobel will only be executed when the distributed implementation "
+    		"with \"-m 3\" is selected.\n");
     
     if(!strcmp(output_file, input_file)) {
 		bool abort_program = true;
 		bool waiting_for_answer = true;
 		char answer;
 		while(waiting_for_answer) {
-			printf("Warning: The input file is the same as the output file. Continuing will overwrite the input file permanently!\nContinue (y/n)? ");
+			fprintf(stderr, "Warning: The input file is the same as the output file. Continuing "
+				"will overwrite the input file permanently!\nContinue (y/n)? ");
 			scanf(" %c", &answer);
 			if(answer == 'y') {
 				abort_program = false;
@@ -760,7 +786,8 @@ int main(int argc, char* argv[])
 					  partFn);
 		else
 		{
-			fprintf(stderr, "Aborting, since there is only one process. Use the parallel version instead.\n");
+			fprintf(stderr, "Aborting, since there is only one process. Use the parallel version "
+				"instead.\n");
 			MPI_Abort(MPI_COMM_WORLD, 2);
 		}
 	}
@@ -772,7 +799,9 @@ int main(int argc, char* argv[])
 	}
 	if (picture == NULL)
 	{
-		fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"! If this is not the input file you had in mind please note that it has to be specified as the last argument.\n", input_file);
+		fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"!\n"
+			"If this is not the input file you had in mind please note that it has to be "
+			"specified as the last argument.\n", input_file);
 		return 1;
 	}
 	double loadTime = seconds() - start;
@@ -806,11 +835,11 @@ int main(int argc, char* argv[])
 	if ((implementation != VCD_DISTRIBUTED || self == 0) &&
 		    ppp_pnm_write(output_file, kind, rows, cols, maxval, myPart) != 0)
     {
-		fprintf(stderr, "An error occured when trying to write the processed picture to the output file!\n");
+		fprintf(stderr, "An error occured when trying to write the processed picture to the "
+			"output file!\n");
 		return 2;
 	}
 	double saveTime = seconds() - start;
-	
 	
 	if (implementation == VCD_DISTRIBUTED)
 		MPI_Finalize();

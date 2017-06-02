@@ -51,8 +51,8 @@ run_benchmark('parallel', parallel_row_ids, parallel_cmds, 20);
 # Here we also let the algorithm run on multiple nodes of the Zeus cluster.
 distributed_row_ids = []
 distributed_cmds = []
-for num_nodes in [2, 3, 4, 5, 6, 7, 8]:
-	for num_cores in [2, 4, 6, 8, 10, 12, 14, 16]:
+for num_nodes in [2, 4, 6, 8]:
+	for num_cores in [2, 4, 8, 16]:
 		distributed_row_ids.append(str(num_nodes) + ";" + str(num_cores))
 		distributed_cmds.append(
 			["srun",
