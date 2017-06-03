@@ -224,10 +224,14 @@ void vcdOptimized(double *image, int rows, int columns) {
  * Naive parallel VCD implementation. Exercise (e)
  */
 void vcdNaiveParallel(double *image, int rows, int columns) {
+	double *T = malloc(rows * columns * sizeof(double));
+    double *upperRowN = malloc(columns * sizeof(double));
+    double *lowerRowN = malloc(columns * sizeof(double));
+    int epsilon_exit;
+    
     inline double S(int c, int r)
     {
-        return r >= 0 && r < rows &&
-        	c >= 0 && c < columns ? image[r * columns + c] : 0;
+        return c >= 0 && c < columns ? (r < 0 ? upperRowN[c] : (r >= rows ? lowerRowN[c] : image[r * columns + c])) : 0;
     }
     
     inline double delta(int x, int y)
@@ -244,33 +248,50 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
 		return d;
 	}
     
-	double *T = malloc(rows * columns * sizeof(double));
-    double *upperRowN = malloc(columns * sizeof(double));
-    double *lowerRowN = malloc(columns * sizeof(double));
+    /*Init neighbouring rows which are the borders of the whole image*/
+    int i;
+    if (self == 0) {
+        for (i = 0; i < columns; ++i) {
+            upperRowN[i] = 0;
+        }
+    }
+    
+    if (self == np-1) {
+        for (i = 0; i < columns; ++i) {
+            lowerRowN[i] = 0;
+        }
+    }
+    
     MPI_Request rqS1, rqS2;
 	
-	for (int i = 0; i < N; i++)
+	for (i = 0; i < N; i++)
 	{
-		int epsilon_exit = 1;
+		int l_epsilon_exit = 1;
         
+        /*Send upper row to lower neighbour*/
         if (self != 0) {
-            MPI_Isend(image[0], columns, MPI_DOUBLE, self-1, 0, MPI_COMM_WORLD,
+            MPI_Isend(&image[0], columns, MPI_DOUBLE, self-1, 0, MPI_COMM_WORLD,
                     &rqS1);
         }
         
+        /*Send lower row to upper neighbour*/
+        if (self != np-1) {
+            MPI_Isend(&image[(rows-1)*columns], columns, MPI_DOUBLE, self+1, 0,
+                MPI_COMM_WORLD, &rqS2);
+        }
+        
+        /*Receive lower row from upper neighbour*/
         if (self != np-1){
             MPI_Recv(lowerRowN, columns, MPI_DOUBLE, self+1, 0, MPI_COMM_WORLD,
                     MPI_STATUS_IGNORE);
+            MPI_Wait(&rqS2, MPI_STATUS_IGNORE);
         }
         
-        if (self != np-1) {
-            MPI_Isend(image[rows-1], columns, MPI_DOUBLE, self+1, 0, MPI_COMM_WORLD,
-                    &rqS2);
-        }
-        
+        /*Receive upper row from lower neighbour*/
         if (self != 0){
             MPI_Recv(upperRowN, columns, MPI_DOUBLE, self-1, 0, MPI_COMM_WORLD,
                     MPI_STATUS_IGNORE);
+            MPI_Wait(&rqS1, MPI_STATUS_IGNORE);
         }
         
 		for (int y = 0; y < rows; ++y)
@@ -282,22 +303,27 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
 				
 				if (fabs(delta_x_y) > epsilon &&
 						x >= 1 && x < columns - 1 &&
-					    y >= 1 && y < rows - 1)
+					    (self == 0 && y >= 1 || y >= 0) &&
+                        (self == np - 1 && y < rows - 1 || y < rows))
 				{
-					epsilon_exit = 0;
+					l_epsilon_exit = 0;
 				}
 			}
 		}
+        
 		double *temp = T;
 		T = image;
 		image = temp;
-		
-        MPI_Allreduce(epsilon_exit, 1, MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+        
+        MPI_Allreduce(&l_epsilon_exit, &epsilon_exit, 1, MPI_INT, MPI_LAND,
+                MPI_COMM_WORLD);
         
 		if (epsilon_exit)
 			break;
 	}
-	free(T);
+    
+    free(lowerRowN);
+    free(upperRowN);
 }
 
 /*
@@ -586,7 +612,7 @@ int main(int argc, char* argv[]) {
         free(image);
     } else {
         convertDoubleToImage(image, picture, myRowCount, cols, maxval);
-        free(image)
+        free(image);
         
         int *displs = (int *) malloc(np*sizeof(int));
         int *rcvCounts = (int *) malloc(np*sizeof(int));
