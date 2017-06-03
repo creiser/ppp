@@ -228,6 +228,8 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
     double *upperRowN = malloc(columns * sizeof(double));
     double *lowerRowN = malloc(columns * sizeof(double));
     int epsilon_exit;
+    MPI_Request rqS1, rqS2;
+    int numThreads;
     
     inline double S(int c, int r)
     {
@@ -249,7 +251,7 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
 	}
     
     /*Init neighbouring rows which are the borders of the whole image*/
-    int i;
+    int i, j;
     if (self == 0) {
         for (i = 0; i < columns; ++i) {
             upperRowN[i] = 0;
@@ -262,9 +264,22 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
         }
     }
     
-    MPI_Request rqS1, rqS2;
+    #pragma omp parallel
+    {
+        numThreads = omp_get_num_threads();
+    }
+    
+	int *starts = (int *) malloc(numThreads * sizeof(int));
+    int *ends = (int *) malloc(numThreads * sizeof(int));
+    
+	starts[0] = 0;
+	ends[0] = (rows/numThreads + (0 < rows % numThreads ? 1 : 0));
+	for (j = 1; j < numThreads; ++j) {
+		starts[j] = ends[j - 1];
+		ends[j] = starts[j] + (rows/numThreads + (j < rows % numThreads ? 1 : 0));
+    }
 	
-	for (i = 0; i < N; i++)
+	for (i = 0; i < N; ++i)
 	{
 		int l_epsilon_exit = 1;
         
@@ -294,22 +309,25 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
             MPI_Wait(&rqS1, MPI_STATUS_IGNORE);
         }
         
-		for (int y = 0; y < rows; ++y)
-		{
-			for (int x = 0; x < columns; ++x)
-			{
-				double delta_x_y = delta(x, y);
-				T[y * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
-				
-				if (fabs(delta_x_y) > epsilon &&
-						x >= 1 && x < columns - 1 &&
-					    (self == 0 && y >= 1 || y >= 0) &&
-                        (self == np - 1 && y < rows - 1 || y < rows))
-				{
-					l_epsilon_exit = 0;
-				}
-			}
-		}
+        #pragma omp parallel shared(l_epsilon_exit)
+        {
+            double delta_x_y;
+            int threadNr = omp_get_thread_num();
+        
+            for (int y = starts[threadNr]; y < ends[threadNr]; ++y) {
+                for (int x = 0; x < columns; ++x) {
+                    delta_x_y = delta(x, y);
+                    T[y * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
+                    
+                    if (fabs(delta_x_y) > epsilon &&
+                            x >= 1 && x < columns - 1 &&
+                            (self == 0 && y >= 1 || y >= 0) &&
+                            (self == np - 1 && y < rows - 1 || y < rows)) {
+                        l_epsilon_exit = 0;
+                    }
+                }
+            }
+        }
         
 		double *temp = T;
 		T = image;
