@@ -82,6 +82,7 @@ static int N = 40;
 static double epsilon = 0.005;
 static double kappa = 30;
 static double delta_t = 0.1;
+static double sobelC = 0.9;
 
 inline static double phi(double nu)
 {
@@ -232,6 +233,8 @@ void vcdOptimized(double *image, int rows, int columns) {
 			break;
     }
     free(upper);
+    free(left_upper);
+    free(right_upper);
     free(T);
 }
 
@@ -336,8 +339,8 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
                     
                     if (fabs(delta_x_y) > epsilon &&
                             x >= 1 && x < columns - 1 &&
-                            (self == 0 && y >= 1 || y >= 0) &&
-                            (self == np - 1 && y < rows - 1 || y < rows)) {
+                            ((self == 0 && y >= 1) || y >= 0) &&
+                            ((self == np - 1 && y < rows - 1) || y < rows)) {
                         l_epsilon_exit = 0;
                     }
                 }
@@ -357,6 +360,8 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
     
     free(lowerRowN);
     free(upperRowN);
+    free(starts);
+    free(ends);
 }
 
 /*
@@ -507,6 +512,55 @@ void vcdOptimizedParallel(double *image, int rows, int columns) {
 	/*free(T);*/
 }
 
+/*
+ * New pixel value according to Sobel for given values of sx and sy.
+ */
+inline static double T_sobel(int sx, int sy) {
+    double v = sobelC * hypot(sx,sy);
+    return v > 1.0 ? 1.0 : v;
+}
+
+/*
+ * Sobel with unrolling of the first and last iteration
+ * of the loop on x to avoid the case distinctions
+ * in the innermost loop.
+ */
+void sobel(double *image, int rows, int columns) {
+    double (*imageN)[columns] = (double (*)[columns]) &image[columns];
+    inline double S(int c, int r) {
+        return r >= 0 && r < rows ? imageN[r][c] : 0;
+    }
+    
+    double *T = malloc(rows * columns * sizeof(double));
+    
+#pragma omp parallel for
+    for (int y = 0; y < rows; ++y) {
+        double sx, sy;
+
+        // x == 0
+        sx = 2*S(0,y-1) + S(1,y-1) - 2*S(0,y+1) - S(1,y+1);
+        sy = - S(1,y-1) - 2*S(1,y) - S(1,y+1);
+        T[y*columns] = T_sobel(sx,sy);
+
+        for (int x = 1; x < columns-1; ++x) {
+            sx = S(x-1,y-1) + 2*S(x,y-1) + S(x+1,y-1)
+                -S(x-1,y+1) - 2*S(x,y+1) - S(x+1,y+1);
+            sy = S(x-1,y-1) + 2*S(x-1,y) + S(x-1,y+1)
+                -S(x+1,y-1) - 2*S(x+1,y) - S(x+1,y+1);
+            T[y*columns+x] = T_sobel(sx,sy);
+        }
+
+        // x == columns-1
+        sx = S(columns-2,y-1) + 2*S(columns-1,y-1)
+            -S(columns-2,y+1) - 2*S(columns-1,y+1);
+        sy = S(columns-2,y-1) + 2*S(columns-2,y) + S(columns-2,y+1);
+        T[y*columns+columns-1] = T_sobel(sx,sy);
+    }
+    
+    double *temp = T;
+	T = image;
+	image = temp;
+}
 
 /* liefert die Sekunden seit dem 01.01.1970 */
 static double seconds() {
@@ -520,7 +574,7 @@ int main(int argc, char* argv[]) {
 	bool fast_vcd = false;
     bool parallel_vcd = false;
 	bool execute_sobel = false;
-	int option, rows, cols, maxval;
+	int option, rows, cols, maxcolor;
 	enum pnm_kind kind;
 	char* output_file = "out.pgm";
 	char* input_file;
@@ -534,6 +588,7 @@ int main(int argc, char* argv[]) {
         switch(option) {
         	case 'h':
         		printf("[-hvfs][-o name_of_output_file] name_of_input_file\nThis program takes a picture in pgm format and processes it based on the given options.\nUse \"-h\" to display this description.\nUse \"-v\" to let the picture be manipulated by the vcd algorithm.\nUse \"-f\" if you want the program to use the faster version of the vcd algorithm if \"-v\" is set, too.\nUse \"-p\" to execute the parallelized vcd version.\nCombine \"-f\" and \"-p\" as needed.\nUse \"-s\" to let the picture be manipulated by the sobel algorithm.\nIf both the \"-v\" and the \"-s\" options are set, the vcd algorithm will be executed first.\nUse \"-o\" to specify the file the processed image should be saved to. The default option ist \"out.pgm\".\nThe input file has to be given as the last argument.\n");
+                MPI_Finalize();
         		return 0;
         	break;
         	case 'v':
@@ -582,24 +637,24 @@ int main(int argc, char* argv[]) {
 	double vcdStart;
     
     if (!parallel_vcd) {
-        picture = ppp_pnm_read(input_file, &kind, &rows, &cols, &maxval);
+        picture = ppp_pnm_read(input_file, &kind, &rows, &cols, &maxcolor);
             
         if(picture == NULL) {
             fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"! If this is not the input file you had in mind please note that it has to be specified as the last argument.\n", input_file);
             return 1;
         }
         
-        image = convertImageToDouble(picture, rows, cols, maxval);
+        image = convertImageToDouble(picture, rows, cols, maxcolor);
     } else{
         picture = ppp_pnm_read_part(input_file, &kind, &rows, &cols,
-                    &maxval, partfn);
+                    &maxcolor, partfn);
                     
         if(picture == NULL) {
             fprintf(stderr, "An error occured when trying to load the picture from the file \"%s\"! If this is not the input file you had in mind please note that it has to be specified as the last argument.\n", input_file);
             return 1;
         }
                 
-        image = convertImageToDouble(picture, myRowCount, cols, maxval);
+        image = convertImageToDouble(picture, myRowCount, cols, maxcolor);
     }
     
     /*execute different variants of the vcd algorithm*/
@@ -634,17 +689,17 @@ int main(int argc, char* argv[]) {
     /*execute the sobel algorithm*/
 	if(execute_sobel) {
         if(!parallel_vcd) {
-            
+            sobel(image, rows, cols);
         } else {
             
         }
 	}
     
     if(!parallel_vcd) {
-        convertDoubleToImage(image, picture, rows, cols, maxval);
+        convertDoubleToImage(image, picture, rows, cols, maxcolor);
         free(image);
     } else {
-        convertDoubleToImage(image, picture, myRowCount, cols, maxval);
+        convertDoubleToImage(image, picture, myRowCount, cols, maxcolor);
         free(image);
         
         int *displs = (int *) malloc(np*sizeof(int));
@@ -668,7 +723,7 @@ int main(int argc, char* argv[]) {
     }
     
     if(!parallel_vcd || (parallel_vcd && self == 0)) {
-        if(ppp_pnm_write(output_file, kind, rows, cols, maxval, picture) != 0) {
+        if(ppp_pnm_write(output_file, kind, rows, cols, maxcolor, picture) != 0) {
             fprintf(stderr, "An error occured when trying to write the processed picture to the output file!\n");
             return 2;
         }
