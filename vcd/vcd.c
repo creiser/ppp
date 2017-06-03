@@ -172,32 +172,47 @@ void vcdOptimized(double *image, int rows, int columns) {
     //intermediate store
     double *T = malloc(rows * columns * sizeof(double));
     //caches one row of phi() below current row
-    double *prev_y = malloc(columns * sizeof(double));
+    double *upper = malloc(columns * sizeof(double));
+    //caches one row of xi() for left upper corners
+    double *left_upper = malloc(columns * sizeof(double));
+    //caches one row of xi() for right upper corners
+    double *right_upper = malloc((columns + 1) * sizeof(double));
+
     for (int i = 0; i < N; i++)
 	{
         int epsilon_exit = 1;
-        //init prev_y
+        
+        //init caches
         for (int i = 0; i < columns; ++i) {
-            prev_y[i] = phi(S(i, 0));
+            upper[i] = phi(S(i, 0));
+            left_upper[i] = xi(S(i + 1, 0));
+            right_upper[i] = xi(S(i - 1, 0));
         }
         
         for (int y = 0; y < rows; ++y)
         {
-            double prev_x = phi(S(0, y)); // consider: S(-1, y) = 0
+            double left = phi(S(0, y)); // S(-1, y) = 0
+            double first_upper_left = xi(S(0, y)); // S(-1+1, y-1+1)-S(-1, y-1)
+            right_upper[columns] = xi(S(columns - 1, 0));
+            
             for (int x = 0; x < columns; ++x)
             {
-                delta = -prev_x;
-                prev_x = phi(S(x + 1, y) - S(x, y));
-                delta += prev_x;
+                delta = -left;
+                left = phi(S(x + 1, y) - S(x, y));
+                delta += left;
                 
-                delta -= prev_y[x];
-                prev_y[x] = phi(S(x, y + 1) - S(x, y));
-                delta += prev_y[x];
+                delta -= upper[x];
+                upper[x] = phi(S(x, y + 1) - S(x, y));
+                delta += upper[x];
                 
-                delta += xi(S(x + 1, y + 1) - S(x, y));
-                delta -= xi(S(x, y) - S(x - 1 , y - 1));
-                delta += xi(S(x - 1, y + 1) - S(x, y));
-                delta -= xi(S(x, y) - S(x + 1, y - 1));
+                delta -= first_upper_left;
+                first_upper_left = left_upper[x];
+                left_upper[x] = xi(S(x + 1, y + 1) - S(x, y));
+                delta += left_upper[x];
+                
+                delta -= right_upper[x+1];
+                right_upper[x] = xi(S(x - 1, y + 1) - S(x, y));
+                delta += right_upper[x];
                 
                 T[y * columns + x] = S(x, y) + kappa * delta_t * delta;
                 
@@ -216,7 +231,7 @@ void vcdOptimized(double *image, int rows, int columns) {
         if (epsilon_exit)
 			break;
     }
-    free(prev_y);
+    free(upper);
     free(T);
 }
 
