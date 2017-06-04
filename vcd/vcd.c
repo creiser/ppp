@@ -526,7 +526,7 @@ void vcdOptimizedParallel(double *image, int rows, int columns) {
 /*
  * New pixel value according to Sobel for given values of sx and sy.
  */
-inline static double T_sobel(int sx, int sy) {
+inline static double T_sobel(double sx, double sy) {
     double v = sobelC * hypot(sx,sy);
     return v > 1.0 ? 1.0 : v;
 }
@@ -536,15 +536,13 @@ inline static double T_sobel(int sx, int sy) {
  * of the loop on x to avoid the case distinctions
  * in the innermost loop.
  */
-void sobel(double *image, int rows, int columns) {
-    double (*imageN)[columns] = (double (*)[columns]) &image[columns];
+void sobel(double **image, int rows, int columns) {
     inline double S(int c, int r) {
-        return r >= 0 && r < rows ? imageN[r][c] : 0;
+        return r >= 0 && r < rows ? (*image)[r * columns + c] : 0;
     }
     
     double *T = malloc(rows * columns * sizeof(double));
     
-#pragma omp parallel for
     for (int y = 0; y < rows; ++y) {
         double sx, sy;
 
@@ -552,7 +550,7 @@ void sobel(double *image, int rows, int columns) {
         sx = 2*S(0,y-1) + S(1,y-1) - 2*S(0,y+1) - S(1,y+1);
         sy = - S(1,y-1) - 2*S(1,y) - S(1,y+1);
         T[y*columns] = T_sobel(sx,sy);
-
+        
         for (int x = 1; x < columns-1; ++x) {
             sx = S(x-1,y-1) + 2*S(x,y-1) + S(x+1,y-1)
                 -S(x-1,y+1) - 2*S(x,y+1) - S(x+1,y+1);
@@ -568,9 +566,7 @@ void sobel(double *image, int rows, int columns) {
         T[y*columns+columns-1] = T_sobel(sx,sy);
     }
     
-    double *temp = T;
-	T = image;
-	image = temp;
+	*image = T;
 }
 
 /* liefert die Sekunden seit dem 01.01.1970 */
@@ -700,9 +696,10 @@ int main(int argc, char* argv[]) {
     /*execute the sobel algorithm*/
 	if(execute_sobel) {
         if(!parallel_vcd) {
-            sobel(image, rows, cols);
+            sobel(&image, rows, cols);
         } else {
-            
+            //Not working right now
+            //sobel(&image, myRowCount, cols);
         }
 	}
     
