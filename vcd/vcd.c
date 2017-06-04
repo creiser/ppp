@@ -251,7 +251,8 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
     
     inline double S(int c, int r)
     {
-        return c >= 0 && c < columns ? (r < 0 ? upperRowN[c] : (r >= rows ? lowerRowN[c] : image[r * columns + c])) : 0;
+        return c >= 0 && c < columns ? (r < 0 ? upperRowN[c] :
+            (r >= rows ? lowerRowN[c] : image[r * columns + c])) : 0;
     }
     
     inline double delta(int x, int y)
@@ -365,151 +366,161 @@ void vcdNaiveParallel(double *image, int rows, int columns) {
 }
 
 /*
- * Cache previous row and left value to reuse already calculated values.
+ * Optimized parallel VCD implementation. Exercise (f)
  */
 void vcdOptimizedParallel(double *image, int rows, int columns) {
-    inline double S(int c, int r)
+	int numThreads;
+    
+    #pragma omp parallel
     {
-        return r >= 0 && r < rows &&
-        	c >= 0 && c < columns ? image[r * columns + c] : 0;
+        numThreads = omp_get_num_threads();
     }
     
-    /* Allocate a buffer to not overwrite pixels that are needed
-       later again in their original version.
-       
-       Note that each pixel needs 4 of the surrounding pixels
-       that otherwise would have been overwritten by a prior step.
-       
-       (left, up-left, up, up-right)
-       */
-	double *T = malloc(rows * columns * sizeof(double));
+    double *T = malloc(rows * columns * sizeof(double));
+    double *upperRowN = malloc(columns * sizeof(double));
+    double *lowerRowN = malloc(columns * sizeof(double));
+    double *upper = malloc(columns * numThreads * sizeof(double));
+    double *left_upper = malloc(columns * numThreads * sizeof(double));
+    double *right_upper = malloc((columns + 1) * numThreads * sizeof(double));
+    int epsilon_exit;
+    MPI_Request rqS1, rqS2;
+    
+    inline double S(int c, int r)
+    {
+        return c >= 0 && c < columns ? (r < 0 ? upperRowN[c] : 
+            (r >= rows ? lowerRowN[c] : image[r * columns + c])) : 0;
+    }
+    
+    /*Init neighbouring rows which are the borders of the whole image*/
+    int i, j;
+    if (self == 0) {
+        for (i = 0; i < columns; ++i) {
+            upperRowN[i] = 0;
+        }
+    }
+    
+    if (self == np-1) {
+        for (i = 0; i < columns; ++i) {
+            lowerRowN[i] = 0;
+        }
+    }
+    
+    #pragma omp parallel
+    {
+        numThreads = omp_get_num_threads();
+    }
+    
+	int *starts = (int *) malloc(numThreads * sizeof(int));
+    int *ends = (int *) malloc(numThreads * sizeof(int));
+    
+	starts[0] = 0;
+	ends[0] = (rows/numThreads + (0 < rows % numThreads ? 1 : 0));
+	for (j = 1; j < numThreads; ++j) {
+		starts[j] = ends[j - 1];
+		ends[j] = starts[j] + (rows/numThreads + (j < rows % numThreads ? 1 : 0));
+    }
 	
-	printf("N: %d, kappa: %f, epsilon: %f, delta_t: %f\n", N, kappa, epsilon, delta_t);
-	
-	//printf("1\n");
-	//omp_set_num_threads(4);
-	
-	for (int i = 0; i < N; i++)
+	for (i = 0; i < N; ++i)
 	{
-		// Share epsilon_exit among the threads
-		int epsilon_exit = 1;
-		
-		
-		//int test_order[] = {2,0,3,4,1,6,5,7};
-		//for (int k = 0; k < 8; k++)
-		#pragma omp parallel shared(epsilon_exit)
-		{
-			double delta_x_y;
-			// To initalize the caching for each thread, we need to know about the assigned
-			// "blocks" for each thread. Idea: manually assign subareas of the image to the
-			// threads (MPI style).
-			// To be safe just use the exact same code as we used for MPI.
-			int num_threads = omp_get_num_threads();
-			//int num_threads = 8;
-			//printf("num_threads: %d\n", num_threads);
-			int *counts = malloc(2 * num_threads * sizeof(int));
-			int *displs = &counts[num_threads];
-			displs[0] = 0;
-			counts[0] = (rows / num_threads + (0 < rows % num_threads ? 1 : 0));
-			for (int j = 1; j < num_threads; j++) {
-				counts[j] = (rows / num_threads + (j < rows % num_threads ? 1 : 0));
-				displs[j] = displs[j - 1] + counts[j - 1];
-			}
-		
-			//int thread_num = test_order[k];
-			int thread_num = omp_get_thread_num();
-			int start = displs[thread_num];
-			int end = start + counts[thread_num];
-			
-			//printf("i: %d, thread_num: %d, pixel[0]: %f\n", i, thread_num, image[0]);
-			
-			// We can reuse up-left, up and up-right
-			// Every thread needs his own values
-			double *up = malloc(columns * sizeof(double));
-			double *up_left = malloc(columns * sizeof(double));
-			double *up_right = malloc((columns + 1) * sizeof(double));
-			
-			// We cannot do the little up_right[x + 1] = up_left[x - 1]
-			// trick from the sequential method here, since the second
-			// term does not equal 0 in general.
-			
-			// Fun fact: up_right[0] is never used and needn't be calculated therefore.
-			for (int x = 0; x < columns; ++x)
-			{
-				up[x] = phi(S(x, start) - S(x, start - 1)); // consider: S(x, -1) = 0
-				up_left[x] = xi(S(x + 1, start) - S(x, start - 1)); // consider: S(x, -1) = 0
-				up_right[x] = xi(S(x - 1, start) - S(x, start - 1));
-			}
-			
-			//printf("2\n");
-			//printf("start: %d, end: %d\n", start, end);
-			
-			// Nothing has to be changed here for the parallel version except of the
-			// start and end of the loop
-			for (int y = start; y < end; ++y)
-			{
-				double prev = phi(S(0, y)); // consider: S(-1, y) = 0
-				double prev_up_left = xi(S(0, y)); // consider: S(-1, y - 1) = 0
-				up_right[columns] = xi(S(columns - 1, y));
-				for (int x = 0; x < columns; ++x)
-				{
-					delta_x_y = -prev;
-					prev = phi(S(x + 1, y) - S(x, y));
-					delta_x_y += prev;
-					// Substitutes:
-					// 	  delta_x_y =  phi(S(x + 1, y) - S(x, y));
-					// 	  delta_x_y -= phi(S(x, y) - S(x - 1, y));
-			
-					delta_x_y -= up[x];
-					up[x] = phi(S(x, y + 1) - S(x, y));
-					delta_x_y += up[x];
-					// Substitutes:
-					// 	  delta_x_y += phi(S(x, y + 1) - S(x, y));
-					// 	  delta_x_y -= phi(S(x, y) - S(x, y - 1));
-			
-					delta_x_y -= prev_up_left;
-					prev_up_left = up_left[x];
-					up_left[x] = xi(S(x + 1, y + 1) - S(x, y));
-					delta_x_y += up_left[x];
-					// Substitutes:
-					// 	  delta_x_y += xi(S(x + 1, y + 1) - S(x, y));
-					// 	  delta_x_y -= xi(S(x, y) - S(x - 1 , y - 1));
-			
-					delta_x_y -= up_right[x + 1];
-					up_right[x] = xi(S(x - 1, y + 1) - S(x, y));
-					delta_x_y += up_right[x];
-					// Substitutes:
-					// 	  delta_x_y += xi(S(x - 1, y + 1) - S(x, y));
-					// 	  delta_x_y -= xi(S(x, y) - S(x + 1, y - 1));
-			
-					T[y * columns + x] = S(x, y) + kappa * delta_t * delta_x_y;
-			
-					if (fabs(delta_x_y) > epsilon &&
-							x >= 1 && x < columns - 1 &&
-							y >= 1 && y < rows - 1)
-					{
-						// epsilon_exit is never read inside the parallel area
-						// so we don't have to introduce a critical or atomic section
-						epsilon_exit = 0;
-					}
-				}
-			}
-			//printf("3\n");
-			
-			free(up);
-			free(up_left);
-			free(up_right);
-		}
+		int l_epsilon_exit = 1;
+        
+        /*Send upper row to lower neighbour*/
+        if (self != 0) {
+            MPI_Isend(&image[0], columns, MPI_DOUBLE, self-1, 0, MPI_COMM_WORLD,
+                    &rqS1);
+        }
+        
+        /*Send lower row to upper neighbour*/
+        if (self != np-1) {
+            MPI_Isend(&image[(rows-1)*columns], columns, MPI_DOUBLE, self+1, 0,
+                MPI_COMM_WORLD, &rqS2);
+        }
+        
+        /*Receive lower row from upper neighbour*/
+        if (self != np-1){
+            MPI_Recv(lowerRowN, columns, MPI_DOUBLE, self+1, 0, MPI_COMM_WORLD,
+                    MPI_STATUS_IGNORE);
+            MPI_Wait(&rqS2, MPI_STATUS_IGNORE);
+        }
+        
+        /*Receive upper row from lower neighbour*/
+        if (self != 0){
+            MPI_Recv(upperRowN, columns, MPI_DOUBLE, self-1, 0, MPI_COMM_WORLD,
+                    MPI_STATUS_IGNORE);
+            MPI_Wait(&rqS1, MPI_STATUS_IGNORE);
+        }
+        
+        #pragma omp parallel shared(l_epsilon_exit)
+        {
+            double delta;
+            int threadNr = omp_get_thread_num();
+            double *l_upper = &upper[threadNr*columns];
+            double *l_left_upper = &left_upper[threadNr*columns];
+            double *l_right_upper = &right_upper[threadNr*(columns + 1)];
+            
+            //init caches
+            for (int i = 0; i < columns; ++i) {
+                l_upper[i] = phi(S(i, starts[threadNr])
+                            - S(i, starts[threadNr]-1));
+                l_left_upper[i] = xi(S(i + 1, starts[threadNr])
+                                - S(i, starts[threadNr]-1));
+                l_right_upper[i] = xi(S(i - 1, starts[threadNr])
+                                 - S(i, starts[threadNr]-1));
+            }
+        
+            for (int y = starts[threadNr]; y < ends[threadNr]; ++y) {
+                double left = phi(S(0, y));
+                double first_upper_left = xi(S(0, y));
+                l_right_upper[columns] = xi(S(columns - 1, starts[threadNr]));
+            
+                for (int x = 0; x < columns; ++x) {
+                    delta = -left;
+                    left = phi(S(x + 1, y) - S(x, y));
+                    delta += left;
+                    
+                    delta -= l_upper[x];
+                    l_upper[x] = phi(S(x, y + 1) - S(x, y));
+                    delta += l_upper[x];
+                    
+                    delta -= first_upper_left;
+                    first_upper_left = l_left_upper[x];
+                    l_left_upper[x] = xi(S(x + 1, y + 1) - S(x, y));
+                    delta += l_left_upper[x];
+                    
+                    delta -= l_right_upper[x+1];
+                    l_right_upper[x] = xi(S(x - 1, y + 1) - S(x, y));
+                    delta += l_right_upper[x];
+                    
+                    T[y * columns + x] = S(x, y) + kappa * delta_t * delta;
+                    
+                    if (fabs(delta) > epsilon &&
+                            x >= 1 && x < columns - 1 &&
+                            ((self == 0 && y >= 1) || y >= 0) &&
+                            ((self == np - 1 && y < rows - 1) || y < rows)) {
+                        l_epsilon_exit = 0;
+                    }
+                }
+            }
+        }
+        
 		double *temp = T;
 		T = image;
 		image = temp;
-		
-		printf("i: %d\n", i);
-		
+        
+        MPI_Allreduce(&l_epsilon_exit, &epsilon_exit, 1, MPI_INT, MPI_LAND,
+                MPI_COMM_WORLD);
+        
 		if (epsilon_exit)
 			break;
 	}
-	/*free(T);*/
+    
+    free(lowerRowN);
+    free(upperRowN);
+    free(starts);
+    free(ends);
+    free(upper);
+    free(left_upper);
+    free(right_upper);
 }
 
 /*
@@ -664,24 +675,24 @@ int main(int argc, char* argv[]) {
                 // execute sequential, non-optimised vcd algorithm
                 vcdStart = seconds();
                 vcdNaive(image, rows, cols);
-                printf("vcd time: %f\n", seconds() - vcdStart);
+                printf("sequential naive vcd time: %f\n", seconds() - vcdStart);
             } else {
                 // execute sequential, optimised vcd algorithm
                 vcdStart = seconds();
                 vcdOptimized(image, rows, cols);
-                printf("vcd time: %f\n", seconds() - vcdStart);
+                printf("sequential opt. vcd time: %f\n", seconds() - vcdStart);
             }
         } else if (parallel_vcd) {
             if (!fast_vcd) {
                 //execute parallel, non-optimised vcd algorithm
                 vcdStart = seconds();
                 vcdNaiveParallel(image, myRowCount, cols);
-                printf("vcd time: %f\n", seconds() - vcdStart);
+                printf("parallel naive vcd time: %f\n", seconds() - vcdStart);
             } else {
                 // execute parallel, optimised vcd algorithm
                 vcdStart = seconds();
-                //vcdOptimizedParallel(image, rows, cols);
-                printf("vcd time: %f\n", seconds() - vcdStart);
+                vcdOptimizedParallel(image, myRowCount, cols);
+                printf("parallel opt. vcd time: %f\n", seconds() - vcdStart);
             }
         }
 	}
