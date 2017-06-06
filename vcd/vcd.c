@@ -569,6 +569,81 @@ void sobel(double **image, int rows, int columns) {
 	*image = T;
 }
 
+void sobelParallel(double **image, int rows, int columns) {    
+    double *T = malloc(rows * columns * sizeof(double));
+    double *upperRowN = malloc(columns * sizeof(double));
+    double *lowerRowN = malloc(columns * sizeof(double));
+    MPI_Request rqS1, rqS2;
+    
+    inline double S(int c, int r) {
+        return r < 0 ? upperRowN[c] : 
+                    (r >= rows ? lowerRowN[c] : (*image)[r * columns + c]);
+    }
+    
+    if (self == 0) {
+        for (int i = 0; i < columns; ++i) {
+            upperRowN[i] = 0;
+        }
+    }
+    
+    if (self == np-1) {
+        for (int i = 0; i < columns; ++i) {
+            lowerRowN[i] = 0;
+        }
+    }
+    
+    /*Send upper row to lower neighbour*/
+    if (self != 0) {
+        MPI_Isend(&(*image)[0], columns, MPI_DOUBLE, self-1, 0, MPI_COMM_WORLD,
+                &rqS1);
+    }
+    
+    /*Send lower row to upper neighbour*/
+    if (self != np-1) {
+        MPI_Isend(&(*image)[(rows-1)*columns], columns, MPI_DOUBLE, self+1, 0,
+            MPI_COMM_WORLD, &rqS2);
+    }
+    
+    /*Receive lower row from upper neighbour*/
+    if (self != np-1){
+        MPI_Recv(lowerRowN, columns, MPI_DOUBLE, self+1, 0, MPI_COMM_WORLD,
+                MPI_STATUS_IGNORE);
+        MPI_Wait(&rqS2, MPI_STATUS_IGNORE);
+    }
+    
+    /*Receive upper row from lower neighbour*/
+    if (self != 0){
+        MPI_Recv(upperRowN, columns, MPI_DOUBLE, self-1, 0, MPI_COMM_WORLD,
+                MPI_STATUS_IGNORE);
+        MPI_Wait(&rqS1, MPI_STATUS_IGNORE);
+    }
+    
+    for (int y = 0; y < rows; ++y) {
+        double sx, sy;
+
+        // x == 0
+        sx = 2*S(0,y-1) + S(1,y-1) - 2*S(0,y+1) - S(1,y+1);
+        sy = - S(1,y-1) - 2*S(1,y) - S(1,y+1);
+        T[y*columns] = T_sobel(sx,sy);
+        
+        for (int x = 1; x < columns-1; ++x) {
+            sx = S(x-1,y-1) + 2*S(x,y-1) + S(x+1,y-1)
+                -S(x-1,y+1) - 2*S(x,y+1) - S(x+1,y+1);
+            sy = S(x-1,y-1) + 2*S(x-1,y) + S(x-1,y+1)
+                -S(x+1,y-1) - 2*S(x+1,y) - S(x+1,y+1);
+            T[y*columns+x] = T_sobel(sx,sy);
+        }
+
+        // x == columns-1
+        sx = S(columns-2,y-1) + 2*S(columns-1,y-1)
+            -S(columns-2,y+1) - 2*S(columns-1,y+1);
+        sy = S(columns-2,y-1) + 2*S(columns-2,y) + S(columns-2,y+1);
+        T[y*columns+columns-1] = T_sobel(sx,sy);
+    }
+    
+	*image = T;
+}
+
 /* liefert die Sekunden seit dem 01.01.1970 */
 static double seconds() {
     struct timeval tv;
@@ -698,8 +773,7 @@ int main(int argc, char* argv[]) {
         if(!parallel_vcd) {
             sobel(&image, rows, cols);
         } else {
-            //Not working right now
-            //sobel(&image, myRowCount, cols);
+            sobelParallel(&image, myRowCount, cols);
         }
 	}
     
