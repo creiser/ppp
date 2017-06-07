@@ -1,71 +1,82 @@
 
-(b) Um einen delta-Wert zu berechnen muss in der naiven Version vier mal chi und vier mal xi
-berechnet werden. Ein jeder chi-Wert bzw. xi-Wert wird jedoch genau einmal erneut benötigt
-zur Berechnung eines anderen delta-Wertes. Deshalb ist es sinnvoll diese Werte zu cachen um sie
-später wiederverwenden zu können. Da hierdurch die Rechenlast nahezu halbiert wird, wird auch ein
-relativer Speedup von fast 2 erzielt. Auch im parallelen Fall kann man mit dieser Optimierung
-grundsätzlich eine Beschleunigung erzielen. Alle 4 Werte (links, oben-links, oben und oben-rechts)
-zu cachen im parallen Fall, kommt allerdings mit Einbußen an die maximal mögliche Parallelität.
-Ohne das Caching kann theoretisch jedem Prozessor ein einzelner Pixel zugeordnet werden. Bei unserer
-Implementierung müssen jedem Prozessor ganze Zeilen zugeordnet werden. Allgemein gesehen müssen dem
-jedem Prozessor ausreichend große Teile des Bildes zugeordnet werden, da auch auszudenken ist, dass
-eine besonders lange Zeile gesplittet werden könnte (nicht möglich in unserer Implementierung).
-Wird allerdings eine ausreichend große Anzahl an Zeilen jedem Prozessor zugeordnet, ist es sinnvoll,
-dass (so wie bei unserer Implementierung) jeder Thread zunächst seinen eigenen Cache aufbaut und
-dann in seinem zugewiesenen Bereich die Rechenlast halbiert wird. Nur an den "Nahtstellen" zwischen
-Prozessoren geht ein Teil der Optimierung verloren. In unserer Implementierung wäre hier der
-Worst-Case (= Caching-Optimierung geht bis auf "links"-Werte verloren), wenn jedem Prozessor nur
-genau eine Zeile zugeordnet wird.
+(b) Um einen delta-Wert zu berechnen muss in der naiven Version vier mal chi und
+vier mal xi berechnet werden. Ein jeder chi-Wert bzw. xi-Wert wird jedoch genau
+einmal erneut benötigt zur Berechnung eines anderen delta-Wertes. Deshalb ist es
+sinnvoll diese Werte zu cachen um sie später wiederverwenden zu können. Da hier-
+durch die Rechenlast nahezu halbiert wird, wird auch ein relativer Speedup von
+fast 2 erzielt. Auch im parallelen Fall kann man mit dieser Optimierung grundsätz-
+lich eine Beschleunigung erzielen. Alle 4 Werte (links, oben-links, oben und
+oben-rechts) zu cachen im parallen Fall, kommt allerdings mit Einbußen an die
+maximal mögliche Parallelität. Ohne das Caching kann theoretisch jedem Prozessor
+ein einzelner Pixel zugeordnet werden. Bei unserer Implementierung müssen jedem
+Prozessor ganze Zeilen zugeordnet werden. Allgemein gesehen müssen dem jedem
+Prozessor ausreichend große Teile des Bildes zugeordnet werden, da auch auszudenken
+ist, dass eine besonders lange Zeile gesplittet werden könnte (nicht möglich in
+unserer Implementierung). Wird allerdings eine ausreichend große Anzahl an Zeilen
+jedem Prozessor zugeordnet, ist es sinnvoll, dass (so wie bei unserer Implementie-
+rung) jeder Thread zunächst seinen eigenen Cache aufbaut und dann in seinem zuge-
+wiesenen Bereich die Rechenlast halbiert wird. Nur an den "Nahtstellen" zwischen
+Prozessoren geht ein Teil der Optimierung verloren. In unserer Implementierung
+wäre hier der Worst-Case (= Caching-Optimierung geht bis auf "links"-Werte ver-
+loren), wenn jedem Prozessor nur genau eine Zeile zugeordnet wird.
 
-Weiter haben wir die chi und xi Formeln vereinfacht und greifen auf Multiplikationen statt 
-Divisionen zurück. Eine schnellere, ausreichend genaue Approximation der exp-Funktion wird
-verwendet. Diese Optimierungen können unverändert für die parallele Version verwendet werden.
+Weiter haben wir die chi und xi Formeln vereinfacht und greifen auf Multiplika-
+tionen statt Divisionen zurück. Eine schnellere, ausreichend genaue Approximation
+der exp-Funktion wird verwendet. Diese Optimierungen können unverändert für die
+parallele Version verwendet werden.
 
-(d) Um auszutauschen, ob bereits aufgrund des Epsilon-Kriterium terminiert werden kann, kann ein
-Allreduce verwendet werden. Nur wenn kein Prozess eine Änderung größer epsilon durchgeführt hat,
-darf terminiert werden. Es wird ein ALLreduce statt einem Reduce verwendet, weil ALLE Prozesse die
-Information benötigen, ob sie die nächste Iteration ausführen sollen oder gleichzeitig terminieren
-sollen.
+(d) Um auszutauschen, ob bereits aufgrund des Epsilon-Kriterium terminiert werden
+kann, kann ein Allreduce verwendet werden. Nur wenn kein Prozess eine Änderung
+größer epsilon durchgeführt hat, darf terminiert werden. Es wird ein ALLreduce
+statt einem Reduce verwendet, weil ALLE Prozesse die Information benötigen, ob
+sie die nächste Iteration ausführen sollen oder gleichzeitig terminieren sollen.
 
-Da jeder Prozess jeweils eine Zeile vom oberen Prozess und unteren Prozess
-nach Beendingung einer Iteration benötigen, müssen diese jeweils mit den beiden Nachbarprozessen
-ausgetauscht werden. Ohne Präventition kann es abhängig von der Implementierung zu einer Verklemmung
-kommen, da sowohl gleichzeitig an den selben Prozess gesendet und empfangen werden soll.
+Da jeder Prozess jeweils eine Zeile vom oberen Prozess und unteren Prozess nach
+Beendingung einer Iteration benötigen, müssen diese jeweils mit den beiden Nachbar-
+prozessen ausgetauscht werden. Ohne Präventition kann es abhängig von der Implemen-
+tierung zu einer Verklemmung kommen, da sowohl gleichzeitig an den selben Prozess
+gesendet und empfangen werden soll.
 
-Ein jeder Prozess außer Prozess 0 sendet seine oberste Zeile an den Prozess darüber (-1) und
-empfängt die untereste Zeile vom Prozess darüber (-1).
-Ein jeder Prozess außer Prozess np-1 sendet seine unterste Zeile an den Prozess darunter (+1) und
-empfängt die obereste Zeile des Prozesses vom Prozess darunter (+1).
+Ein jeder Prozess außer Prozess 0 sendet seine oberste Zeile an den Prozess
+darüber (-1) und empfängt die untereste Zeile vom Prozess darüber (-1).
+Ein jeder Prozess außer Prozess np-1 sendet seine unterste Zeile an den Prozess
+darunter (+1) und empfängt die obereste Zeile des Prozesses vom Prozess darunter
+(+1).
 
-Eine Möglichkeit die Verklemmung zu vermeiden, ist dass Prozesse mit gerader ID zunächst nach unten
-senden, währende Prozesse mit ungerader ID zunächst von oben empfangen. Dann werden die Rollen von
-Sender und Empfänger vertauscht. Dann senden Prozesse mit ungerader ID nach unten und Prozesse mit
-gerader ID empfangen von oben. Auch hier werden die Rollen von Sender und Empfänger wieder
-vertauscht. Alternativ kann auf nicht-blockierendes Senden mit Isend zurückgegegriffen werden um die
-Verklemmung zu vermeiden.
+Eine Möglichkeit die Verklemmung zu vermeiden, ist dass Prozesse mit gerader ID
+zunächst nach unten senden, währende Prozesse mit ungerader ID zunächst von oben
+empfangen. Dann werden die Rollen von Sender und Empfänger vertauscht. Dann senden
+Prozesse mit ungerader ID nach unten und Prozesse mit gerader ID empfangen von
+oben. Auch hier werden die Rollen von Sender und Empfänger wieder vertauscht.
+Alternativ kann auf nicht-blockierendes Senden mit Isend zurückgegegriffen werden
+um die Verklemmung zu vermeiden.
 
-Eine weitere Möglichkeit wäre, dass jeder Prozess seine oberste und unterste Reihe zunächst an einen
-ausgzeichneten Knoten sendet. Nachdem dieser vollständig enthalten, sendet er zunächst alle obersten
-Reihen und danach alle unteresten Reihen. Auch hiermit könnte ohne asynchrone Kommunikation eine
-Verklemmung vermieden werden, da eine Reihenfolge (erst auf obereste Reihe warten, dann auf
-untereste Reihe warten) definiert ist. Statt ordinären Send und Receives könnten Gather
-(Einsammeln der einzelnen Zeilen) und Scatter (Verteilen der Zeilen) verwendet werden.
+Eine weitere Möglichkeit wäre, dass jeder Prozess seine oberste und unterste Reihe
+zunächst an einen ausgzeichneten Knoten sendet. Nachdem dieser vollständig ent-
+halten, sendet er zunächst alle obersten Reihen und danach alle unteresten Reihen.
+Auch hiermit könnte ohne asynchrone Kommunikation eine Verklemmung vermieden
+werden, da eine Reihenfolge (erst auf obereste Reihe warten, dann auf untereste
+Reihe warten) definiert ist. Statt ordinären Send und Receives könnten Gather
+(Einsammeln der einzelnen Zeilen) und Scatter (Verteilen der Zeilen) verwendet
+werden.
 
-Ein möglicher Flaschenhals bei einer naiven verteilten Implementierung ist, dass ein Prozess
-warten muss bis JEDER Prozess seine Iteration ebenfalls beendet hat. Denn nur wenn
-alle Prozesse das Allreduce ausgeführt haben kann in die nächste Iteration fortgeschritten werden.
-Abhilfe könnte hierzu die nicht-blockierende Alternative Iallreduce verschaffen. Es ist möglich,
-dass ein Prozess bereits mit seiner nächsten Iteration fortfährt in Erwartung, dass das
-Epsilion-Abbruchkriterium noch nicht erreicht wurde. Wird dann später festgestellt, dass das
-Epsilon-Abbruchkriterium doch erreicht wurde, kann die Iteration vorzeitig terminiert werden und
-das Zwischenergebnis verworfen werden, da sowieso die ursprünglichen Daten nicht unwiderruflich
-verändert werden bevor die übernächste Iteration begonnen wird. Ein ähnliches Problem entsteht,
-wenn ein Prozess noch nicht die Zeile von seinem unteren Prozess erhalten hat, die er erst am
-Ende seiner Iteration benötigt. Durch nicht-blockierendes Empfangen dieser unteren Zeile kann der
-Prozess bereits seine Iteration beginnen. Vorstellbar ist sogar, dass ein Prozess vor Erhalt der
-Zeile von seinem oberen Prozess startet, indem er seine Berechnung in der 2. Zeile startet
-und erst nach Erhalt der obersten Zeile diese "nachholt". Dadurch können Berechnungen und
-Kommunikationen gleichzeitig ablaufen.
+Ein möglicher Flaschenhals bei einer naiven verteilten Implementierung ist, dass
+ein Prozess warten muss bis JEDER Prozess seine Iteration ebenfalls beendet hat.
+Denn nur wenn alle Prozesse das Allreduce ausgeführt haben kann in die nächste
+Iteration fortgeschritten werden. Abhilfe könnte hierzu die nicht-blockierende
+Alternative Iallreduce verschaffen. Es ist möglich, dass ein Prozess bereits mit
+seiner nächsten Iteration fortfährt in Erwartung, dass das Epsilion-Abbruchkrite-
+rium noch nicht erreicht wurde. Wird dann später festgestellt, dass das Epsilon-
+Abbruchkriterium doch erreicht wurde, kann die Iteration vorzeitig terminiert
+werden und das Zwischenergebnis verworfen werden, da sowieso die ursprünglichen
+Daten nicht unwiderruflich verändert werden bevor die übernächste Iteration begon-
+nen wird. Ein ähnliches Problem entsteht, wenn ein Prozess noch nicht die Zeile
+von seinem unteren Prozess erhalten hat, die er erst am Ende seiner Iteration
+benötigt. Durch nicht-blockierendes Empfangen dieser unteren Zeile kann der Prozess
+bereits seine Iteration beginnen. Vorstellbar ist sogar, dass ein Prozess vor
+Erhalt der Zeile von seinem oberen Prozess startet, indem er seine Berechnung in
+der 2. Zeile startet und erst nach Erhalt der obersten Zeile diese "nachholt".
+Dadurch können Berechnungen und Kommunikationen gleichzeitig ablaufen.
 
 Performancemessung auf Zeus mit:
 srun -n 1 -N 1 -c NUM_CORES --threads-per-core=1 --constraint=zeus./vcd in.pgm -m 2
@@ -80,27 +91,30 @@ srun -n 1 -N 1 -c NUM_CORES --threads-per-core=1 --constraint=zeus./vcd in.pgm -
 14     0.0984      3.58
 16     0.0801      4.40
 Durchschnittswert aus 20 Messungen mit T_seq: 0.3521
-Interessant ist, dass ab 10 Kernen ein deutlich geringerer Speedup erzielt wird, aber dann
-mit noch mehr Kernen der Speedup wieder nach oben geht. Unsere Theorie hierzu ist, dass dies damit
-zusammenhängt, dass Zeus ab 10 Kernen zwei seperate Prozessoren verwendet, da ein einzelner
-Prozessor nur über 8 Kerne verfügt.
+Interessant ist, dass ab 10 Kernen ein deutlich geringerer Speedup erzielt wird,
+aber dann mit noch mehr Kernen der Speedup wieder nach oben geht. Unsere Theorie
+hierzu ist, dass dies damit zusammenhängt, dass Zeus ab 10 Kernen zwei seperate
+Prozessoren verwendet, da ein einzelner Prozessor nur über 8 Kerne verfügt.
 
 Mit "python ./benchmark.py" können unsere Messergebnisse reproduziert werden.
-Die Ausgabe der Benchmarks befindet sich sequential.csv, parallel.csv und distributed.csv.
-vcd_plot.png enthält eine Visualisierung der Single-Node-Messung.
+Die Ausgabe der Benchmarks befindet sich sequential.csv, parallel.csv und
+distributed.csv. vcd_plot.png enthält eine Visualisierung der Single-Node-Messung.
 
-Einen Speedup von 14.05 konnten wir mit 4 Knoten mit jeweils 8 Cores erreichen (ebenfalls ein
-Mittel aus 20 Messungen.)
-Befehl: srun -n 4 -N 4 -c 8 --threads-per-core=1 --cpu_bind=cores --constraint=zeus ./vcd in.pgm -m 3
+Einen Speedup von 14.05 konnten wir mit 4 Knoten mit jeweils 8 Cores erreichen
+(ebenfalls ein Mittel aus 20 Messungen.)
+Befehl: srun -n 4 -N 4 -c 8 --threads-per-core=1 --cpu_bind=cores --constraint=zeus
+                ./vcd in.pgm -m 3
 	
 
 Ausgabe der Hilfefunktion unserer vcd-Anwendung:
-[-hs][-m implementation][-t number_of_omp_threads][-o name_of_output_file] name_of_input_file
-This program takes a picture in pgm format and executes the VCD algorithm on it based on the given options.
+[-hs][-m implementation][-t number_of_omp_threads][-o name_of_output_file]
+      name_of_input_file
+This program takes a picture in pgm format and executes the VCD algorithm on it
+based on the given options.
 With the "-m" option the implementation can be specified with an integer.
 Possible values are 0: naive, 1: optimized, 2: parallel and 3: distributed
 Use "-h" to display this description.
 Use "-s" to let the picture be additonally manipulated by the sobel algortihm.
-Use "-o" to specify the file the processed image should be saved to. The default setting is "out.pgm".
+Use "-o" to specify the file the processed image should be saved to. The default
+setting is "out.pgm".
 The input file has to be given as the last argument.
-
