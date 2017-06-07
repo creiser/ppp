@@ -7,7 +7,9 @@ relativer Speedup von fast 2 erzielt. Auch im parallelen Fall kann man mit diese
 grundsätzlich eine Beschleunigung erzielen. Alle 4 Werte (links, oben-links, oben und oben-rechts)
 zu cachen im parallen Fall, kommt allerdings mit Einbußen an die maximal mögliche Parallelität.
 Ohne das Caching kann theoretisch jedem Prozessor ein einzelner Pixel zugeordnet werden. Bei unserer
-Implementierung müssen jedem Prozessor ganze Zeilen zugeordnet werden.
+Implementierung müssen jedem Prozessor ganze Zeilen zugeordnet werden. Allgemein gesehen müssen dem
+jedem Prozessor ausreichend große Teile des Bildes zugeordnet werden, da auch auszudenken ist, dass
+eine besonders lange Zeile gesplittet werden könnte (nicht möglich in unserer Implementierung).
 Wird allerdings eine ausreichend große Anzahl an Zeilen jedem Prozessor zugeordnet, ist es sinnvoll,
 dass (so wie bei unserer Implementierung) jeder Thread zunächst seinen eigenen Cache aufbaut und
 dann in seinem zugewiesenen Bereich die Rechenlast halbiert wird. Nur an den "Nahtstellen" zwischen
@@ -23,7 +25,9 @@ verwendet. Diese Optimierungen können unverändert für die parallele Version v
 Allreduce verwendet werden. Nur wenn kein Prozess eine Änderung größer epsilon durchgeführt hat,
 darf terminiert werden. Es wird ein ALLreduce statt einem Reduce verwendet, weil ALLE Prozesse die
 Information benötigen, ob sie die nächste Iteration ausführen sollen oder gleichzeitig terminieren
-sollen. Da jeder Prozess jeweils eine Zeile vom oberen Prozess und unteren Prozess
+sollen.
+
+Da jeder Prozess jeweils eine Zeile vom oberen Prozess und unteren Prozess
 nach Beendingung einer Iteration benötigen, müssen diese jeweils mit den beiden Nachbarprozessen
 ausgetauscht werden. Ohne Präventition kann es abhängig von der Implementierung zu einer Verklemmung
 kommen, da sowohl gleichzeitig an den selben Prozess gesendet und empfangen werden soll.
@@ -39,6 +43,13 @@ Sender und Empfänger vertauscht. Dann senden Prozesse mit ungerader ID nach unt
 gerader ID empfangen von oben. Auch hier werden die Rollen von Sender und Empfänger wieder
 vertauscht. Alternativ kann auf nicht-blockierendes Senden mit Isend zurückgegegriffen werden um die
 Verklemmung zu vermeiden.
+
+Eine weitere Möglichkeit wäre, dass jeder Prozess seine oberste und unterste Reihe zunächst an einen
+ausgzeichneten Knoten sendet. Nachdem dieser vollständig enthalten, sendet er zunächst alle obersten
+Reihen und danach alle unteresten Reihen. Auch hiermit könnte ohne asynchrone Kommunikation eine
+Verklemmung vermieden werden, da eine Reihenfolge (erst auf obereste Reihe warten, dann auf
+untereste Reihe warten) definiert ist. Statt ordinären Send und Receives könnten Gather
+(Einsammeln der einzelnen Zeilen) und Scatter (Verteilen der Zeilen) verwendet werden.
 
 Ein möglicher Flaschenhals bei einer naiven verteilten Implementierung ist, dass ein Prozess
 warten muss bis JEDER Prozess seine Iteration ebenfalls beendet hat. Denn nur wenn
@@ -56,13 +67,32 @@ Zeile von seinem oberen Prozess startet, indem er seine Berechnung in der 2. Zei
 und erst nach Erhalt der obersten Zeile diese "nachholt". Dadurch können Berechnungen und
 Kommunikationen gleichzeitig ablaufen.
 
-Performancemessung auf Zeus mit srun -n 1 -N 1 -c NUM_CORES --constraint=zeus ./vcd in.pgm -m 1
--c     Speedup
- 2     1.00
- 4     1.87
- 8     3.24
-16     5.02
-Durchschnittswert aus 20 Messungen.
+Performancemessung auf Zeus mit:
+srun -n 1 -N 1 -c NUM_CORES --threads-per-core=1 --constraint=zeus./vcd in.pgm -m 2
+
+-c     T_para      Speedup (T_seq / T_para)
+ 2     0.1715      2.05
+ 4     0.0958      3.68
+ 6     0.0665      5.29
+ 8     0.0549      6.41
+10     0.1410      2.50
+12     0.1191      2.96
+14     0.0984      3.58
+16     0.0801      4.40
+Durchschnittswert aus 20 Messungen mit T_seq: 0.3521
+Interessant ist, dass ab 10 Kernen ein deutlich geringerer Speedup erzielt wird, aber dann
+mit noch mehr Kernen der Speedup wieder nach oben geht. Unsere Theorie hierzu ist, dass dies damit
+zusammenhängt, dass Zeus ab 10 Kernen zwei seperate Prozessoren verwendet, da ein einzelner
+Prozessor nur über 8 Kerne verfügt.
+
+Mit "python ./benchmark.py" können unsere Messergebnisse reproduziert werden.
+Die Ausgabe der Benchmarks befindet sich sequential.csv, parallel.csv und distributed.csv.
+vcd_plot.png enthält eine Visualisierung der Single-Node-Messung.
+
+Einen Speedup von 14.05 konnten wir mit 4 Knoten mit jeweils 8 Cores erreichen (ebenfalls ein
+Mittel aus 20 Messungen.)
+Befehl: srun -n 4 -N 4 -c 8 --threads-per-core=1 --cpu_bind=cores --constraint=zeus ./vcd in.pgm -m 3
+	
 
 Ausgabe der Hilfefunktion unserer vcd-Anwendung:
 [-hs][-m implementation][-t number_of_omp_threads][-o name_of_output_file] name_of_input_file
@@ -73,27 +103,4 @@ Use "-h" to display this description.
 Use "-s" to let the picture be additonally manipulated by the sobel algortihm.
 Use "-o" to specify the file the processed image should be saved to. The default setting is "out.pgm".
 The input file has to be given as the last argument.
-
-Mit "python ./benchmark.py" können unsere Messergebnisse reproduziert werden.
-Die Ausgabe der Benchmarks befindet sich sequential.csv, parallel.csv und distributed.csv.
-vcd_plot.png enthält eine Visualisierung der Single-Node-Messung.
-
-Einen Speedup von 13.54 konnten wir mit der 6 Knoten mit jeweils 16 Cores erreichen (ebenfalls ein
-Mittel aus 20 Messungen.)
-	
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 

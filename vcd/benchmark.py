@@ -51,6 +51,7 @@ for num_cores in [2, 4, 6, 8, 10, 12, 14, 16]:
 		 "-n 1",
 		 "-N 1",
 		 "-c " + str(num_cores),
+		 "--threads-per-core=1",
 		 "--cpu_bind=cores",
 		 "--constraint=zeus", 
 		 "./vcd", "in.pgm", "-m 2"])
@@ -67,6 +68,7 @@ for num_nodes in [2, 4, 6, 8]:
 			 "-n " + str(num_nodes),
 			 "-N " + str(num_nodes),
 			 "-c " + str(num_cores),
+		 	 "--threads-per-core=1",
 			 "--cpu_bind=cores",
 			 "--constraint=zeus", 
 			 "./vcd", "in.pgm", "-m 3"])		  
