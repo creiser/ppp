@@ -5,4 +5,4 @@ all: gravity_simulation.c
 	-L/scratch/ppp2017/ppp_pnm -lppp_pnm -lm 
 
 clean: 
-	$(RM) grav gravity_simulation.o
+	$(RM) grav gravity_simulation.o out.dat iter*

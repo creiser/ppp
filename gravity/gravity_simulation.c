@@ -2,7 +2,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <sys/time.h>
+#include <omp.h> 
 #include "ppp_pnm.h"
+#include "mpi.h"
 
 
 /*
@@ -72,6 +75,23 @@ body* readBodies(FILE *f, int *n) {
     return bodies;
 }
 
+int readBodiesFromFile(char* filename, body **bodies, int *n)
+{
+    FILE *f = fopen(filename, "r");
+    if (f == NULL) {
+	fprintf(stderr, "Could not open file '%s'.\n", filename);
+	return 1;
+    }
+    *bodies = readBodies(f, n);
+    if (bodies == NULL) {
+	fprintf(stderr, "Error reading .dat file\n");
+	return 1;
+    }
+    fclose(f);
+    return 0;
+}
+
+
 /*
  * Schreibe 'n' Koerper aus dem Array 'bodies' in die
  * durch das Dateihandle 'f' bezeichnete Datei im ".dat" Format.
@@ -84,6 +104,18 @@ void writeBodies(FILE *f, const body *bodies, int n) {
 		bodies[i].mass, bodies[i].x, bodies[i].y,
 		bodies[i].vx, bodies[i].vy);
     }
+}
+
+int writeBodiesToFile(char* filename, body *bodies, int numBodies)
+{
+	FILE *f = fopen(filename, "w");
+    if (f == NULL) {
+	fprintf(stderr, "Could not open file '%s'.\n", filename);
+	return 1;
+    }
+    writeBodies(f, bodies, numBodies);
+    fclose(f);
+    return 0;
 }
 
 /*
@@ -164,61 +196,147 @@ void saveImage(int imgNum, const body *bodies, int nBodies,
     free(img);
 }
 
+/* liefert die Sekunden seit dem 01.01.1970 */
+static double seconds()
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec + ((double)tv.tv_usec)/1000000.0;
+}
 
+static const int num_steps = 100;
+static const long double delta_t = 3.16e10;
+
+void simulate(body *bodies, int nBodies)
+{
+	long double *accel =
+		malloc(2 * nBodies * sizeof(long double));
+		
+	long double delta_t_squared = delta_t * delta_t;
+	
+	// Use hardcoded path for testing.
+	struct ImgParams params;
+	params.imgFilePrefix = "iter";
+    params.imgWidth = params.imgHeight = 200;
+    params.width = params.height = 2.0e21;
+	
+	for (int iteration = 0; iteration < num_steps; iteration++)
+	{
+		for (int i = 0; i < nBodies; i++)
+		{
+			int x = 2 * i, y = 2 * i + 1;
+			accel[x] = accel[y] = 0.0;
+			for (int j = 0; j < nBodies; j++)
+			{
+				if (i != j)
+				{
+					long double grav_mass = G * bodies[j].mass;
+					long double x_diff = bodies[j].x - bodies[i].x;
+					long double y_diff = bodies[j].y - bodies[i].y;
+					long double dist = hypotl(x_diff, y_diff);
+					dist = dist * dist * dist;
+					accel[x] += grav_mass * x_diff / dist;
+					accel[y] += grav_mass * y_diff / dist;
+				}
+			}
+		}
+		
+		for (int i = 0; i < nBodies; i++)
+		{
+			int x = 2 * i, y = 2 * i + 1;
+			
+			bodies[i].x += bodies[i].vx * delta_t + 0.5 * accel[x] * delta_t_squared;
+			bodies[i].y += bodies[i].vy * delta_t + 0.5 * accel[y] * delta_t_squared;
+			
+			bodies[i].vx += accel[x] * delta_t;
+			bodies[i].vy += accel[y] * delta_t;
+		}
+		
+		saveImage(iteration, bodies, nBodies, &params);
+	}
+	
+	free(accel);
+}
+
+static inline long double max(long double a, long double b) 
+{
+	return a > b ? a : b;
+}
+
+static inline long double relative_error(long double a, long double b)
+{
+	return fabsl((a - b) / a);
+}
 
 /*
  * Testprogramm fuer readBodies.
  */
 int main(int argc, char *argv[])
 {
-    FILE *f;
-    body *bodies;
-    int i, n;
-    long double px, py;
-    struct ImgParams params;
+    //struct ImgParams params;
 
-    if (argc != 3) {
+    /*if (argc != 3) {
 	fprintf(stderr, "Need exactly two arguments: "
                 "a .dat file and an image file\n");
 	return 1;
+    }*/
+    
+
+	int numBodies;
+	body *bodies;
+    if (readBodiesFromFile("twogalaxies.dat", &bodies, &numBodies)) {
+    	fprintf(stderr, "Could not read input file\n");
+    	return 1;
     }
 
-    f = fopen(argv[1], "r");
-    if (f == NULL) {
-	fprintf(stderr, "Could not open file '%s'.\n", argv[1]);
-	return 1;
-    }
-
-    bodies = readBodies(f, &n);
-    if (bodies == NULL) {
-	fprintf(stderr, "Error reading .dat file\n");
-	fclose(f);
-	return 1;
-    }
-
-    /*
-     * Gelesene Koerper ausgeben.
-     */
-    for (i=0; i<n; i++) {
+    simulate(bodies, numBodies);
+    
+    printf("Calculated results:\n");
+    for (int i=0; i<numBodies && i < 5; i++) {
 	printf("Body %d: mass = %Lg, x = %Lg, y = %Lg, vx = %Lg, vy = %Lg\n",
 	       i, bodies[i].mass, bodies[i].x, bodies[i].y,
 	       bodies[i].vx, bodies[i].vy);
     }
 
-    /*
-     * Impuls berechnen und ausgeben.
-     */
-    totalImpulse(bodies, n, &px, &py);
-    printf("Total impulse: px=%Lg, py=%Lg\n", px, py);
-
-    /*
-     * Gelesene Koerper als PBM-Bild abspeichern.
-     * Parameter passen zu "twogalaxies.dat".
-     */
-    params.imgFilePrefix = argv[2];
-    params.imgWidth = params.imgHeight = 200;
-    params.width = params.height = 2.0e21;
-    saveImage(0, bodies, n, &params);
+    long double px, py;
+    totalImpulse(bodies, numBodies, &px, &py);
+    printf("Calculated impulse: px=%Lg, py=%Lg\n", px, py);
+    
+	body *reference_bodies;
+    if (readBodiesFromFile("twogalaxies_nach_100_Schritten.dat", &reference_bodies, &numBodies)) {
+    	fprintf(stderr, "Could not read input file\n");
+    	return 1;
+    }
+    
+    printf("Reference results:\n");
+    for (int i=0; i<numBodies && i < 5; i++) {
+	printf("Body %d: mass = %Lg, x = %Lg, y = %Lg, vx = %Lg, vy = %Lg\n",
+	       i, reference_bodies[i].mass, reference_bodies[i].x, reference_bodies[i].y,
+	       reference_bodies[i].vx, reference_bodies[i].vy);
+    }
+    
+    writeBodiesToFile("out.dat", bodies, numBodies);
+    
+    totalImpulse(reference_bodies, numBodies, &px, &py);
+    printf("Reference impulse: px=%Lg, py=%Lg\n", px, py);
+    
+    // Calculate the maximum relative error between calculated and reference values.
+    long double max_diff_x = 0;
+    long double max_diff_y = 0;
+    long double max_diff_vx = 0;
+    long double max_diff_vy = 0;
+    for (int i=0; i<numBodies; i++) {
+    	long double diff_x = relative_error(bodies[i].x, reference_bodies[i].x);
+    	long double diff_y = relative_error(bodies[i].y, reference_bodies[i].y);
+    	long double diff_vx = relative_error(bodies[i].vx, reference_bodies[i].vx);
+    	long double diff_vy = relative_error(bodies[i].vy, reference_bodies[i].vy);
+    	max_diff_x = max(diff_x, max_diff_x);
+    	max_diff_y = max(diff_y, max_diff_y);
+    	max_diff_vx = max(diff_vx, max_diff_vx);
+    	max_diff_vy = max(diff_vy, max_diff_vy);
+    }
+    printf("max_diff_x: %Lg, max_diff_y: %Lg, max_diff_vx: %Lg, max_diff_vy: %Lg\n",
+    	max_diff_x, max_diff_y, max_diff_vx, max_diff_vy);
 
     return 0;
 }
