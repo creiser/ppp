@@ -207,6 +207,82 @@ static double seconds()
 static const int num_steps = 100;
 static const long double delta_t = 3.16e10;
 
+int self;
+int np;
+
+void simulateDistributed(body *bodies, int nBodies)
+{
+	long double *accel =
+		malloc(2 * nBodies * sizeof(long double));
+		
+	long double delta_t_squared = delta_t * delta_t;
+	
+	// Calculate the 'i' share as usual, but every process
+	// will do all the 'j's and therefore receive all bodies
+	int *counts = malloc(2 * np * sizeof(int));
+    int *displs = &counts[np];
+	displs[0] = 0;
+    counts[0] = (nBodies/np + (0 < nBodies%np ? 1 : 0)) * 5;
+    for (int i = 1; i < np; i++)
+    {
+		counts[i] = (nBodies/np + (i < nBodies%np ? 1 : 0)) * 5;
+		displs[i] = displs[i-1] + counts[i-1];
+    }
+    int myStart = displs[self] / 5;
+    int myEnd = myStart + counts[self] / 5;
+    int myLength = myEnd - myStart;
+    printf("self: %d, myStart: %d, myEnd: %d, myLength: %d\n",
+    	self, myStart, myEnd, myLength);
+    
+	// Use hardcoded path for testing.
+	struct ImgParams params;
+	params.imgFilePrefix = "iter";
+    params.imgWidth = params.imgHeight = 200;
+    params.width = params.height = 2.0e21;
+	
+	for (int iteration = 0; iteration < num_steps; iteration++)
+	{
+		#pragma omp parallel for
+		for (int i = myStart; i < myEnd; i++)
+		{
+			int x = 2 * i, y = 2 * i + 1;
+			accel[x] = accel[y] = 0.0;
+			for (int j = 0; j < nBodies; j++)
+			{
+				if (i != j)
+				{
+					long double grav_mass = G * bodies[j].mass;
+					long double x_diff = bodies[j].x - bodies[i].x;
+					long double y_diff = bodies[j].y - bodies[i].y;
+					long double dist = hypotl(x_diff, y_diff);
+					dist = dist * dist * dist;
+					accel[x] += grav_mass * x_diff / dist;
+					accel[y] += grav_mass * y_diff / dist;
+				}
+			}
+		}
+		
+		for (int i = myStart; i < myEnd; i++)
+		{
+			int x = 2 * i, y = 2 * i + 1;
+			
+			bodies[i].x += bodies[i].vx * delta_t + 0.5 * accel[x] * delta_t_squared;
+			bodies[i].y += bodies[i].vy * delta_t + 0.5 * accel[y] * delta_t_squared;
+			
+			bodies[i].vx += accel[x] * delta_t;
+			bodies[i].vy += accel[y] * delta_t;
+		}
+		
+		MPI_Allgatherv(MPI_IN_PLACE, counts[self], MPI_LONG_DOUBLE, bodies,
+			counts, displs, MPI_LONG_DOUBLE, MPI_COMM_WORLD);
+		
+		//saveImage(iteration, bodies, nBodies, &params);
+	}
+	
+	free(counts);
+	free(accel);
+}
+
 void simulate(body *bodies, int nBodies)
 {
 	long double *accel =
@@ -228,7 +304,7 @@ void simulate(body *bodies, int nBodies)
 			accel[x] = accel[y] = 0.0;
 			for (int j = 0; j < nBodies; j++)
 			{
-				if (i != j)
+				if (i != j) // TODO: unroll
 				{
 					long double grav_mass = G * bodies[j].mass;
 					long double x_diff = bodies[j].x - bodies[i].x;
@@ -281,7 +357,12 @@ int main(int argc, char *argv[])
 	return 1;
     }*/
     
-
+    int verbose = 0;
+    
+    MPI_Init(&argc, &argv);
+	MPI_Comm_size(MPI_COMM_WORLD, &np);
+	MPI_Comm_rank(MPI_COMM_WORLD, &self);
+    
 	int numBodies;
 	body *bodies;
     if (readBodiesFromFile("twogalaxies.dat", &bodies, &numBodies)) {
@@ -289,18 +370,23 @@ int main(int argc, char *argv[])
     	return 1;
     }
 
-    simulate(bodies, numBodies);
+	double start = seconds();
+	//simulate(bodies, numBodies);
+    simulateDistributed(bodies, numBodies);
+    fprintf(stderr, "time: %f\n", seconds() - start);
     
-    printf("Calculated results:\n");
-    for (int i=0; i<numBodies && i < 5; i++) {
-	printf("Body %d: mass = %Lg, x = %Lg, y = %Lg, vx = %Lg, vy = %Lg\n",
-	       i, bodies[i].mass, bodies[i].x, bodies[i].y,
-	       bodies[i].vx, bodies[i].vy);
-    }
-
+    
     long double px, py;
-    totalImpulse(bodies, numBodies, &px, &py);
-    printf("Calculated impulse: px=%Lg, py=%Lg\n", px, py);
+    if (verbose) {
+		printf("Calculated results:\n");
+		for (int i=0; i<numBodies && i < 5; i++) {
+		printf("Body %d: mass = %Lg, x = %Lg, y = %Lg, vx = %Lg, vy = %Lg\n",
+			   i, bodies[i].mass, bodies[i].x, bodies[i].y,
+			   bodies[i].vx, bodies[i].vy);
+		}
+		totalImpulse(bodies, numBodies, &px, &py);
+    	printf("Calculated impulse: px=%Lg, py=%Lg\n", px, py);
+	}
     
 	body *reference_bodies;
     if (readBodiesFromFile("twogalaxies_nach_100_Schritten.dat", &reference_bodies, &numBodies)) {
@@ -308,17 +394,20 @@ int main(int argc, char *argv[])
     	return 1;
     }
     
-    printf("Reference results:\n");
-    for (int i=0; i<numBodies && i < 5; i++) {
-	printf("Body %d: mass = %Lg, x = %Lg, y = %Lg, vx = %Lg, vy = %Lg\n",
-	       i, reference_bodies[i].mass, reference_bodies[i].x, reference_bodies[i].y,
-	       reference_bodies[i].vx, reference_bodies[i].vy);
-    }
+    if (verbose) {
+		printf("Reference results:\n");
+		for (int i=0; i<numBodies && i < 5; i++) {
+		printf("Body %d: mass = %Lg, x = %Lg, y = %Lg, vx = %Lg, vy = %Lg\n",
+			   i, reference_bodies[i].mass, reference_bodies[i].x, reference_bodies[i].y,
+			   reference_bodies[i].vx, reference_bodies[i].vy);
+		}
+		totalImpulse(reference_bodies, numBodies, &px, &py);
+    	printf("Reference impulse: px=%Lg, py=%Lg\n", px, py);
+	}
     
     writeBodiesToFile("out.dat", bodies, numBodies);
     
-    totalImpulse(reference_bodies, numBodies, &px, &py);
-    printf("Reference impulse: px=%Lg, py=%Lg\n", px, py);
+    
     
     // Calculate the maximum relative error between calculated and reference values.
     long double max_diff_x = 0;
@@ -337,6 +426,8 @@ int main(int argc, char *argv[])
     }
     printf("max_diff_x: %Lg, max_diff_y: %Lg, max_diff_vx: %Lg, max_diff_vy: %Lg\n",
     	max_diff_x, max_diff_y, max_diff_vx, max_diff_vy);
+    	
+	MPI_Finalize();
 
     return 0;
 }
