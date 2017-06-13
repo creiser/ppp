@@ -204,6 +204,16 @@ static double seconds()
     return (double)tv.tv_sec + ((double)tv.tv_usec)/1000000.0;
 }
 
+static inline long double max(long double a, long double b) 
+{
+	return a > b ? a : b;
+}
+
+static inline long double min(long double a, long double b) 
+{
+	return a < b ? a : b;
+}
+
 static const int num_steps = 100;
 static const long double delta_t = 3.16e10;
 
@@ -240,8 +250,11 @@ void simulateDistributed(body *bodies, int nBodies)
     params.imgWidth = params.imgHeight = 200;
     params.width = params.height = 2.0e21;
 	
+	double gather_time = 0.0;
+	double calc_time = 0.0;
 	for (int iteration = 0; iteration < num_steps; iteration++)
 	{
+		double start = seconds();
 		#pragma omp parallel for
 		for (int i = myStart; i < myEnd; i++)
 		{
@@ -261,7 +274,7 @@ void simulateDistributed(body *bodies, int nBodies)
 				}
 			}
 		}
-		
+	
 		for (int i = myStart; i < myEnd; i++)
 		{
 			int x = 2 * i, y = 2 * i + 1;
@@ -272,12 +285,19 @@ void simulateDistributed(body *bodies, int nBodies)
 			bodies[i].vx += accel[x] * delta_t;
 			bodies[i].vy += accel[y] * delta_t;
 		}
-		
+		calc_time += seconds() - start;
+
+		start = seconds();
 		MPI_Allgatherv(MPI_IN_PLACE, counts[self], MPI_LONG_DOUBLE, bodies,
 			counts, displs, MPI_LONG_DOUBLE, MPI_COMM_WORLD);
+		gather_time += seconds() - start;
+
 		
 		//saveImage(iteration, bodies, nBodies, &params);
 	}
+	
+	fprintf(stderr, "gather share: %f\n", gather_time / (calc_time + gather_time));
+	
 	
 	free(counts);
 	free(accel);
@@ -298,21 +318,38 @@ void simulate(body *bodies, int nBodies)
 	
 	for (int iteration = 0; iteration < num_steps; iteration++)
 	{
+		for (int i = 0; i < nBodies; i++) {
+			int x = 2 * i, y = 2 * i + 1;
+			accel[x] = accel[y] = 0.0;
+		}
+	
 		for (int i = 0; i < nBodies; i++)
 		{
 			int x = 2 * i, y = 2 * i + 1;
-			accel[x] = accel[y] = 0.0;
-			for (int j = 0; j < nBodies; j++)
+			//accel[x] = accel[y] = 0.0;
+			for (int j = i; j < nBodies; j++)
 			{
 				if (i != j) // TODO: unroll
 				{
-					long double grav_mass = G * bodies[j].mass;
+					int x_t = 2 * j, y_t = 2 * j + 1;
+					//long double grav_mass = G * bodies[j].mass;
 					long double x_diff = bodies[j].x - bodies[i].x;
 					long double y_diff = bodies[j].y - bodies[i].y;
 					long double dist = hypotl(x_diff, y_diff);
-					dist = dist * dist * dist;
-					accel[x] += grav_mass * x_diff / dist;
-					accel[y] += grav_mass * y_diff / dist;
+					dist *= dist * dist;
+					long double without_mass_x = G * x_diff / dist;
+					accel[x]   += without_mass_x * bodies[j].mass;
+					accel[x_t] -= without_mass_x * bodies[i].mass;
+					long double without_mass_y = G * y_diff / dist;
+					accel[y]   += without_mass_y * bodies[j].mass;
+					accel[y_t] -= without_mass_y * bodies[i].mass;
+					
+					//accel[x] += grav_mass * x_diff / dist;
+					//accel[y] += grav_mass * y_diff / dist;
+					
+					/*int x_t = 2 * j, y_t = 2 * j + 1;
+					accel[x_t] -= (accel[x] * bodies[i].mass) / bodies[j].mass;
+					accel[y_t] -= (accel[y] * bodies[i].mass) / bodies[j].mass;*/
 				}
 			}
 		}
@@ -332,11 +369,6 @@ void simulate(body *bodies, int nBodies)
 	}
 	
 	free(accel);
-}
-
-static inline long double max(long double a, long double b) 
-{
-	return a > b ? a : b;
 }
 
 static inline long double relative_error(long double a, long double b)
@@ -371,8 +403,8 @@ int main(int argc, char *argv[])
     }
 
 	double start = seconds();
-	//simulate(bodies, numBodies);
-    simulateDistributed(bodies, numBodies);
+	simulate(bodies, numBodies);
+    //simulateDistributed(bodies, numBodies);
     fprintf(stderr, "time: %f\n", seconds() - start);
     
     
