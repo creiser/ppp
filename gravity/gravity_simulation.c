@@ -250,7 +250,7 @@ void simulateDistributed(body *bodies, int nBodies)
     params.imgWidth = params.imgHeight = 200;
     params.width = params.height = 2.0e21;
 	
-	double gather_time = 0.0;
+	//double gather_time = 0.0;
 	double calc_time = 0.0;
 	
 	MPI_Request *requests = malloc((np - 1) * sizeof(MPI_Request));
@@ -307,7 +307,8 @@ void simulateDistributed(body *bodies, int nBodies)
 				MPI_Recv(&bodies[remoteStart], counts[sender], MPI_LONG_DOUBLE, sender, 0,
 					MPI_COMM_WORLD, MPI_STATUS_IGNORE);
 			}*/
-				
+			
+			#pragma omp parallel for	
 			for (int i = myStart; i < myEnd; i++)
 			{
 				int x = 2 * i, y = 2 * i + 1;
@@ -360,7 +361,7 @@ void simulateDistributed(body *bodies, int nBodies)
 	}
 	
 	
-	fprintf(stderr, "gather share: %f\n", gather_time / (calc_time + gather_time));
+	//fprintf(stderr, "gather share: %f\n", gather_time / (calc_time + gather_time));
 	
 	free(receive_requests);
 	free(requests);
