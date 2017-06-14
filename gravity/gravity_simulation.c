@@ -318,45 +318,32 @@ void simulate(body *bodies, int nBodies)
 	
 	for (int iteration = 0; iteration < num_steps; iteration++)
 	{
-		for (int i = 0; i < nBodies; i++) {
-			int x = 2 * i, y = 2 * i + 1;
-			accel[x] = accel[y] = 0.0;
+		for (int i = 0; i < 2 * nBodies; i++) {
+			accel[i] = 0.0;
 		}
 	
-		for (int i = 0; i < nBodies; i++)
+		for (int i = 0, x = 0; i < nBodies; i++, x += 2)
 		{
-			int x = 2 * i, y = 2 * i + 1;
-			//accel[x] = accel[y] = 0.0;
-			for (int j = i; j < nBodies; j++)
+			int y = x + 1;
+			for (int j = i + 1, x_t = 2 * j; j < nBodies; j++, x_t += 2)
 			{
-				if (i != j) // TODO: unroll
-				{
-					int x_t = 2 * j, y_t = 2 * j + 1;
-					//long double grav_mass = G * bodies[j].mass;
-					long double x_diff = bodies[j].x - bodies[i].x;
-					long double y_diff = bodies[j].y - bodies[i].y;
-					long double dist = hypotl(x_diff, y_diff);
-					dist *= dist * dist;
-					long double without_mass_x = G * x_diff / dist;
-					accel[x]   += without_mass_x * bodies[j].mass;
-					accel[x_t] -= without_mass_x * bodies[i].mass;
-					long double without_mass_y = G * y_diff / dist;
-					accel[y]   += without_mass_y * bodies[j].mass;
-					accel[y_t] -= without_mass_y * bodies[i].mass;
-					
-					//accel[x] += grav_mass * x_diff / dist;
-					//accel[y] += grav_mass * y_diff / dist;
-					
-					/*int x_t = 2 * j, y_t = 2 * j + 1;
-					accel[x_t] -= (accel[x] * bodies[i].mass) / bodies[j].mass;
-					accel[y_t] -= (accel[y] * bodies[i].mass) / bodies[j].mass;*/
-				}
+				int y_t = x_t + 1;
+				long double x_diff = bodies[j].x - bodies[i].x;
+				long double y_diff = bodies[j].y - bodies[i].y;
+				long double dist = hypotl(x_diff, y_diff);
+				dist *= dist * dist;
+				long double without_mass_x = G * x_diff / dist;
+				accel[x]   += without_mass_x * bodies[j].mass;
+				accel[x_t] -= without_mass_x * bodies[i].mass;
+				long double without_mass_y = G * y_diff / dist;
+				accel[y]   += without_mass_y * bodies[j].mass;
+				accel[y_t] -= without_mass_y * bodies[i].mass;
 			}
 		}
 		
 		for (int i = 0; i < nBodies; i++)
 		{
-			int x = 2 * i, y = 2 * i + 1;
+			int x = 2 * i, y = x + 1;
 			
 			bodies[i].x += bodies[i].vx * delta_t + 0.5 * accel[x] * delta_t_squared;
 			bodies[i].y += bodies[i].vy * delta_t + 0.5 * accel[y] * delta_t_squared;
@@ -365,7 +352,7 @@ void simulate(body *bodies, int nBodies)
 			bodies[i].vy += accel[y] * delta_t;
 		}
 		
-		saveImage(iteration, bodies, nBodies, &params);
+		//saveImage(iteration, bodies, nBodies, &params);
 	}
 	
 	free(accel);
@@ -438,9 +425,7 @@ int main(int argc, char *argv[])
 	}
     
     writeBodiesToFile("out.dat", bodies, numBodies);
-    
-    
-    
+
     // Calculate the maximum relative error between calculated and reference values.
     long double max_diff_x = 0;
     long double max_diff_y = 0;

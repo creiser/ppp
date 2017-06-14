@@ -1,0 +1,12 @@
+*.pbm
+*.pgm
+*.dat
+*.o
+gravity/grav
+scalepgm/genhugepgm
+scalepgm/scalepgm
+vcd/pnmdiff
+vcd/pnmdiff.c
+vcd/vcd
+
+
