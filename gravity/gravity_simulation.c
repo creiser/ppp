@@ -390,8 +390,8 @@ int main(int argc, char *argv[])
     }
 
 	double start = seconds();
-	simulate(bodies, numBodies);
-    //simulateDistributed(bodies, numBodies);
+	//simulate(bodies, numBodies);
+    simulateDistributed(bodies, numBodies);
     fprintf(stderr, "time: %f\n", seconds() - start);
     
     
@@ -424,13 +424,17 @@ int main(int argc, char *argv[])
     	printf("Reference impulse: px=%Lg, py=%Lg\n", px, py);
 	}
     
+    // Write to output file and read in again to get the same precision
+    // as the reference file was written with.
     writeBodiesToFile("out.dat", bodies, numBodies);
+    readBodiesFromFile("out.dat", &bodies, &numBodies); 
 
     // Calculate the maximum relative error between calculated and reference values.
     long double max_diff_x = 0;
     long double max_diff_y = 0;
     long double max_diff_vx = 0;
     long double max_diff_vy = 0;
+    int num_different_vals = 0;
     for (int i=0; i<numBodies; i++) {
     	long double diff_x = relative_error(bodies[i].x, reference_bodies[i].x);
     	long double diff_y = relative_error(bodies[i].y, reference_bodies[i].y);
@@ -440,9 +444,14 @@ int main(int argc, char *argv[])
     	max_diff_y = max(diff_y, max_diff_y);
     	max_diff_vx = max(diff_vx, max_diff_vx);
     	max_diff_vy = max(diff_vy, max_diff_vy);
+    	num_different_vals += (bodies[i].x != reference_bodies[i].x) + 
+    		(bodies[i].y != reference_bodies[i].y) +
+    		(bodies[i].vx != reference_bodies[i].vx) +
+    		(bodies[i].vy != reference_bodies[i].vy);
     }
     printf("max_diff_x: %Lg, max_diff_y: %Lg, max_diff_vx: %Lg, max_diff_vy: %Lg\n",
     	max_diff_x, max_diff_y, max_diff_vx, max_diff_vy);
+	printf("Number of different values: %d\n", num_different_vals);
     	
 	MPI_Finalize();
 
