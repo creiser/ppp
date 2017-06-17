@@ -1,7 +1,12 @@
+#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <sys/time.h>
+#include <omp.h> 
+
+#include "mpi.h"
 #include "ppp_pnm.h"
 
 
@@ -9,6 +14,8 @@
  * Die Gravitationskonstante in m^3/(kg*s^2).
  */
 static const long double G = 6.674e-11;
+
+int np, self;
 
 /*
  * Datentyp zur Beschreibung eines Koerpers.
@@ -22,6 +29,12 @@ typedef struct {
     long double vx, vy;  /* x- und y-Geschwindigkeit in m/s */  
 } body;
 
+/* liefert die Sekunden seit dem 01.01.1970 */
+static double seconds() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (double)tv.tv_sec + ((double)tv.tv_usec)/1000000.0;
+}
 
 /*
  * Kommentare (mit "# ...") in ".dat" Dateien ueberspringen.
@@ -93,19 +106,21 @@ void writeBodies(FILE *f, const body *bodies, int n) {
  *   (px,py): Output-Parameter fuer den Gesamtimpuls
  */
 void totalImpulse(const body *bodies, int nBodies,
-                  long double *px, long double *py)
-{
+                  long double *px, long double *py) {
     long double px_=0, py_=0;
     int i;
 
     for (i=0; i<nBodies; i++) {
-	px_ += bodies[i].mass * bodies[i].vx;
-	py_ += bodies[i].mass * bodies[i].vy;
+        px_ += bodies[i].mass * bodies[i].vx;
+        py_ += bodies[i].mass * bodies[i].vy;
     }
     *px = px_;
     *py = py_;
 }
 
+double interactionRate(const int nBodies, const int steps, const double time) {
+    return nBodies * (nBodies - 1) * (steps / time);
+}
 
 /*
  * Parameter fuer saveImage().
@@ -133,8 +148,7 @@ struct ImgParams {
  *   params:  Parameter fuer das Bild
  */
 void saveImage(int imgNum, const body *bodies, int nBodies,
-               const struct ImgParams *params)
-{
+               const struct ImgParams *params) {
     int i, x, y;
     const int pixels = params->imgWidth * params->imgHeight;
     char name[strlen(params->imgFilePrefix)+10];
@@ -142,19 +156,21 @@ void saveImage(int imgNum, const body *bodies, int nBodies,
 
     if (img == NULL) {
         fprintf(stderr, "Oops: could not allocate memory for image\n");
-	return;
+        return;
     }
 
     sprintf(name, "%s%05d.pbm", params->imgFilePrefix, imgNum);
-    for (i=0; i<pixels; i++)
-	img[i] = 0;
+    for (i=0; i<pixels; i++) {
+        img[i] = 0;
+    }
 
     for (i=0; i<nBodies; i++) {
-	x = params->imgWidth/2  + bodies[i].x*params->imgWidth/params->width;
-	y = params->imgHeight/2 - bodies[i].y*params->imgHeight/params->height;
+        x = params->imgWidth/2  + bodies[i].x*params->imgWidth/params->width;
+        y = params->imgHeight/2 - bodies[i].y*params->imgHeight/params->height;
 
-	if (x >= 0 && x < params->imgWidth && y >= 0 && y < params->imgHeight)
-	    img[y*params->imgWidth + x] = 1;
+        if (x >= 0 && x < params->imgWidth && y >= 0 && y < params->imgHeight) {
+            img[y*params->imgWidth + x] = 1;            
+        }
     }
 
     if (ppp_pnm_write(name, PNM_KIND_PBM, params->imgHeight, params->imgWidth,
@@ -164,52 +180,112 @@ void saveImage(int imgNum, const body *bodies, int nBodies,
     free(img);
 }
 
-
-
 /*
- * Testprogramm fuer readBodies.
+ * Implementation of a naive sequential gravity simulation. (a)
  */
-int main(int argc, char *argv[])
-{
-    FILE *f;
-    body *bodies;
-    int i, n;
+void gravity_naive(body* bodies, const int n,
+                   const int steps, const int tDelta) {
+    //TODO
+}
+
+void usage() {
+	fprintf(stderr,
+		"name_of_input_file [-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file]\n"
+		"This program takes a .dat file with defined bodies and executes a gravity simulation on it based on the given options.\n"
+		"With the \"-m\" option the implementation can be specified with an integer.\n"
+		"Possible values are 0: naive, 1: optimized, 2: distributed and 3: distributed optimized\n"
+        "Use \"-S\" to specify the amount of simulation steps."
+        "Use \"-t\" to specify the duration of one simulation step."
+		"Use \"-h\" to display this description.\n"
+		"Use \"-o\" to specify the file the simulation result should be saved to. The default setting is \"out.dat\".\n"
+		"The input file has to be given as the last argument.\n");
+}
+
+#define GRAVITY_NAIVE 0
+#define GRAVITY_OPTIMIZED 1
+#define GRAVITY_DISTRIBUTED 2
+#define GRAVITY_OPTIMIZED_DISTRIBUTED 3
+
+int main(int argc, char *argv[]) {
+    MPI_Init(&argc, &argv);
+	MPI_Comm_size(MPI_COMM_WORLD, &np);
+	MPI_Comm_rank(MPI_COMM_WORLD, &self);
+    
+    FILE* f;
+    char* output_file = "out.dat";
+    body* bodies;
+    int option, i, nrBodies, steps, timeDelta;
+    int implementation = GRAVITY_OPTIMIZED_DISTRIBUTED;
+    double = start;
     long double px, py;
     struct ImgParams params;
 
-    if (argc != 3) {
-	fprintf(stderr, "Need exactly two arguments: "
-                "a .dat file and an image file\n");
-	return 1;
+    if (argc >= 2) {
+        fprintf(stderr, "Need at least one argument: "
+                   "a .dat file with bodies\n");
+        return 1;
+    }
+    
+    while ((option = getopt(argc,argv,"ho:m:S:t:")) != -1) {
+        switch(option) {
+        	case 'h':
+        		usage();
+        		return 0;
+        		break;
+        	case 'o':
+        		output_file = optarg;
+    			break;
+    		case 'm':
+    			implementation = atoi(optarg);
+    			break;
+            case 'S':
+                steps = atoi(optarg);
+                break;
+			case 't':
+				timeDelta = atoi(optarg);
+        		break;
+        	default:
+                fprintf(stderr, "'%s' is not a defined parameter.", option);
+        		break;
+        }
     }
 
     f = fopen(argv[1], "r");
     if (f == NULL) {
-	fprintf(stderr, "Could not open file '%s'.\n", argv[1]);
-	return 1;
+        fprintf(stderr, "Could not open file '%s'.\n", argv[1]);
+        return 1;
     }
 
-    bodies = readBodies(f, &n);
+    bodies = readBodies(f, &nrBodies);
     if (bodies == NULL) {
-	fprintf(stderr, "Error reading .dat file\n");
-	fclose(f);
-	return 1;
+        fprintf(stderr, "Error reading .dat file\n");
+        fclose(f);
+        return 1;
     }
+    
+    totalImpulse(bodies, nrBodies, &px, &py);
+    printf("Total impulse before simulation: px=%Lg, py=%Lg\n", px, py);
 
-    /*
-     * Gelesene Koerper ausgeben.
-     */
-    for (i=0; i<n; i++) {
-	printf("Body %d: mass = %Lg, x = %Lg, y = %Lg, vx = %Lg, vy = %Lg\n",
-	       i, bodies[i].mass, bodies[i].x, bodies[i].y,
-	       bodies[i].vx, bodies[i].vy);
+    start = seconds();
+    if (implementation == 0) {
+        gravity_naive(bodies, nrBodies, steps, timeDelta);
     }
+    double time = seconds() - start;
+    double rate = interactionRate(nrBodies, steps, time);
+    printf("Interaction rate of simulation: %f\n", rate);
+    
+    f = NULL;
+    f = fopen(output_file, "w");
+    if (f == NULL) {
+        fprintf(stderr, "Could not open or create file '%s'.\n", output_file);
+        fclose(f);
+        return 1;
+    }
+    
+    writeBodies(f, bodies, nrBodies);
 
-    /*
-     * Impuls berechnen und ausgeben.
-     */
-    totalImpulse(bodies, n, &px, &py);
-    printf("Total impulse: px=%Lg, py=%Lg\n", px, py);
+    totalImpulse(bodies, nrBodies, &px, &py);
+    printf("Total impulse after simulation: px=%Lg, py=%Lg\n", px, py);
 
     /*
      * Gelesene Koerper als PBM-Bild abspeichern.
@@ -218,7 +294,8 @@ int main(int argc, char *argv[])
     params.imgFilePrefix = argv[2];
     params.imgWidth = params.imgHeight = 200;
     params.width = params.height = 2.0e21;
-    saveImage(0, bodies, n, &params);
+    saveImage(0, bodies, nrBodies, &params);
+    fclose(f);
 
     return 0;
 }
