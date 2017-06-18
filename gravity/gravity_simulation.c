@@ -119,7 +119,7 @@ void totalImpulse(const body *bodies, int nBodies,
 }
 
 double interactionRate(const int nBodies, const int steps, const double time) {
-    return nBodies * (nBodies - 1) * (steps / time);
+    return nBodies * (nBodies - 1) * ((double) steps / time);
 }
 
 /*
@@ -183,19 +183,61 @@ void saveImage(int imgNum, const body *bodies, int nBodies,
 /*
  * Implementation of a naive sequential gravity simulation. (a)
  */
-void gravity_naive(body* bodies, const int n,
+void gravity_naive(body **bodies, const int n,
                    const int steps, const int tDelta) {
-    //TODO
+    long double aTotalX;
+    long double aTotalY;
+    long double vLength;
+    body *T = (body *) malloc(sizeof(body) * n);
+    
+    for (int s = 0 ; s < steps; ++s) {
+        for (int i = 0; i < n; ++i) {
+            aTotalX = 0;
+            aTotalY = 0;
+    
+            for (int j = 0; j < n; ++j) {
+                if (i != j) {
+                    vLength = hypot((*bodies)[j].x - (*bodies)[i].x,
+                                    (*bodies)[j].y - (*bodies)[i].y);
+                    
+                    if (vLength != 0) {
+                        aTotalX += G * (*bodies)[j].mass
+                                   * ((*bodies)[j].x - (*bodies)[i].x)
+                                   / pow(vLength, 3);
+                    }
+                    
+                    if (vLength != 0) {
+                        aTotalY += G * (*bodies)[j].mass
+                                   * ((*bodies)[j].y - (*bodies)[i].y)
+                                   / pow(vLength, 3);
+                    }
+                }
+            }
+            
+            T[i].mass = (*bodies)[i].mass;
+            T[i].vx = (*bodies)[i].vx + aTotalX * tDelta;
+            T[i].vy = (*bodies)[i].vy + aTotalY * tDelta;
+            T[i].x = (*bodies)[i].x + (*bodies)[i].vx * tDelta
+                        + 0.5 * aTotalX * tDelta * tDelta;
+            T[i].y = (*bodies)[i].y + (*bodies)[i].vy * tDelta
+                        + 0.5 * aTotalY * tDelta * tDelta;
+        }
+        
+        body *temp = T;
+		T = *bodies;
+		*bodies = temp;
+    }
+        
 }
 
 void usage() {
 	fprintf(stderr,
-		"name_of_input_file [-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file]\n"
+		"[-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file] name_of_input_file\n"
 		"This program takes a .dat file with defined bodies and executes a gravity simulation on it based on the given options.\n"
 		"With the \"-m\" option the implementation can be specified with an integer.\n"
 		"Possible values are 0: naive, 1: optimized, 2: distributed and 3: distributed optimized\n"
-        "Use \"-S\" to specify the amount of simulation steps."
-        "Use \"-t\" to specify the duration of one simulation step."
+        "Use \"-S\" to specify the amount of simulation steps.\n"
+        "Use \"-t\" to specify the duration of one simulation step.\n"
 		"Use \"-h\" to display this description.\n"
 		"Use \"-o\" to specify the file the simulation result should be saved to. The default setting is \"out.dat\".\n"
 		"The input file has to be given as the last argument.\n");
@@ -211,20 +253,16 @@ int main(int argc, char *argv[]) {
 	MPI_Comm_size(MPI_COMM_WORLD, &np);
 	MPI_Comm_rank(MPI_COMM_WORLD, &self);
     
-    FILE* f;
-    char* output_file = "out.dat";
-    body* bodies;
-    int option, i, nrBodies, steps, timeDelta;
+    FILE *f;
+    char *output_file = "out.dat";
+    body *bodies;
+    int option, nrBodies;
+    int steps = 366;
+    int timeDelta = 86400;
     int implementation = GRAVITY_OPTIMIZED_DISTRIBUTED;
-    double = start;
+    double start;
     long double px, py;
     struct ImgParams params;
-
-    if (argc >= 2) {
-        fprintf(stderr, "Need at least one argument: "
-                   "a .dat file with bodies\n");
-        return 1;
-    }
     
     while ((option = getopt(argc,argv,"ho:m:S:t:")) != -1) {
         switch(option) {
@@ -245,14 +283,15 @@ int main(int argc, char *argv[]) {
 				timeDelta = atoi(optarg);
         		break;
         	default:
-                fprintf(stderr, "'%s' is not a defined parameter.", option);
+                fprintf(stderr, "'%c' is not a defined parameter.", option);
         		break;
         }
     }
 
-    f = fopen(argv[1], "r");
+    f = fopen(argv[argc - 1], "r");
     if (f == NULL) {
         fprintf(stderr, "Could not open file '%s'.\n", argv[1]);
+        MPI_Finalize();
         return 1;
     }
 
@@ -260,6 +299,7 @@ int main(int argc, char *argv[]) {
     if (bodies == NULL) {
         fprintf(stderr, "Error reading .dat file\n");
         fclose(f);
+        MPI_Finalize();
         return 1;
     }
     
@@ -268,7 +308,7 @@ int main(int argc, char *argv[]) {
 
     start = seconds();
     if (implementation == 0) {
-        gravity_naive(bodies, nrBodies, steps, timeDelta);
+        gravity_naive(&bodies, nrBodies, steps, timeDelta);
     }
     double time = seconds() - start;
     double rate = interactionRate(nrBodies, steps, time);
@@ -279,6 +319,7 @@ int main(int argc, char *argv[]) {
     if (f == NULL) {
         fprintf(stderr, "Could not open or create file '%s'.\n", output_file);
         fclose(f);
+        MPI_Finalize();
         return 1;
     }
     
@@ -291,11 +332,12 @@ int main(int argc, char *argv[]) {
      * Gelesene Koerper als PBM-Bild abspeichern.
      * Parameter passen zu "twogalaxies.dat".
      */
-    params.imgFilePrefix = argv[2];
-    params.imgWidth = params.imgHeight = 200;
-    params.width = params.height = 2.0e21;
-    saveImage(0, bodies, nrBodies, &params);
+    // params.imgFilePrefix = argv[2];
+    // params.imgWidth = params.imgHeight = 200;
+    // params.width = params.height = 2.0e21;
+    // saveImage(0, bodies, nrBodies, &params);
     fclose(f);
+    MPI_Finalize();
 
     return 0;
 }
