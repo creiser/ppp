@@ -227,19 +227,27 @@ void simulateDistributed(body *bodies, int nBodies)
 		
 	long double delta_t_squared = delta_t * delta_t;
 	
+	const int body_struct_size = 5;
+	
 	// Calculate the 'i' share as usual, but every process
 	// will do all the 'j's and therefore receive all bodies
 	int *counts = malloc(2 * np * sizeof(int));
     int *displs = &counts[np];
 	displs[0] = 0;
-    counts[0] = (nBodies/np + (0 < nBodies%np ? 1 : 0)) * 5;
+    counts[0] = (nBodies/np + (0 < nBodies%np ? 1 : 0)) * body_struct_size;
+    int *starts = malloc(np * sizeof(int));
+    int *ends = malloc(np * sizeof(int));
+    starts[0] = displs[0] / body_struct_size;
+    ends[0] = starts[0] + counts[0] / body_struct_size;
     for (int i = 1; i < np; i++)
     {
-		counts[i] = (nBodies/np + (i < nBodies%np ? 1 : 0)) * 5;
+		counts[i] = (nBodies/np + (i < nBodies%np ? 1 : 0)) * body_struct_size;
 		displs[i] = displs[i-1] + counts[i-1];
+		starts[i] = displs[self] / body_struct_size;
+		ends[i] = starts[i] + counts[self] / body_struct_size;
     }
-    int myStart = displs[self] / 5;
-    int myEnd = myStart + counts[self] / 5;
+    int myStart = starts[self];
+    int myEnd = ends[self];
     int myLength = myEnd - myStart;
     printf("self: %d, myStart: %d, myEnd: %d, myLength: %d\n",
     	self, myStart, myEnd, myLength);
@@ -249,91 +257,61 @@ void simulateDistributed(body *bodies, int nBodies)
 	params.imgFilePrefix = "iter";
     params.imgWidth = params.imgHeight = 200;
     params.width = params.height = 2.0e21;
-	
-	//double gather_time = 0.0;
-	double calc_time = 0.0;
-	
-	MPI_Request *requests = malloc((np - 1) * sizeof(MPI_Request));
-	MPI_Request *receive_requests = malloc((np - 1) * sizeof(MPI_Request));
+    
+    // Probably too complicated!
+    // If the number of processes divides by 2, the first half of processes
+    // get an additional part.
+    /*int numParts = 1 + (np - 1) / 2 
+    	+ ((np % 2 == 0 && self < np / 2) ? 1 : 0);
+    int myColumns = 0;
+    for (int i = 0; i < numParts; i++) {
+    	myColumns += counts[(self + i) % np] / body_struct_size;
+    }
+    fprintf(stderr, "self: %d, numParts: %d, myColumns: %d\n", self, numParts, myColumns);*/
+    
+    
+    int *columnDist = malloc(nBodies * sizeof(int));
+    for (int i = 0; i < nBodies; i++) {
+    	columnDist[i] = nBodies / 2 -
+    		((nBodies % 2 == 0 && i >= nBodies / 2) ? 1 : 0);
+		if (self == -1)
+			fprintf(stderr, "%d: %d\n", i, columnDist[i]);
+	}
+
 	for (int iteration = 0; iteration < num_steps; iteration++)
 	{
-		if (iteration != 0) {
-			for (int z = 1; z < np; z++) {
-				int sender = (self - z + np) % np;
-				int remoteStart = displs[sender] / 5;
-				//int remoteEnd = remoteStart + counts[sender] / 5;
-				MPI_Irecv(&bodies[remoteStart], counts[sender], MPI_LONG_DOUBLE, sender, 0,
-						MPI_COMM_WORLD, &receive_requests[z - 1]);
-				//Enqueue(sender);
-			}
+		for (int i = 0; i < 2 * nBodies; i++) {
+			accel[i] = 0.0;
 		}
 	
 		double start = seconds();
-		#pragma omp parallel for
-		for (int i = myStart; i < myEnd; i++)
+		for (int i = myStart, x = 2 * i; i < myEnd; i++, x += 2)
 		{
-			int x = 2 * i, y = 2 * i + 1;
-			accel[x] = accel[y] = 0.0;
-			for (int j = myStart; j < myEnd; j++)
+			int y = x + 1;
+			for (int j = i + 1; j < i + 1 + columnDist[i]; j++)
 			{
-				if (i != j)
-				{
-					long double grav_mass = G * bodies[j].mass;
-					long double x_diff = bodies[j].x - bodies[i].x;
-					long double y_diff = bodies[j].y - bodies[i].y;
-					long double dist = hypotl(x_diff, y_diff);
-					dist = dist * dist * dist;
-					accel[x] += grav_mass * x_diff / dist;
-					accel[y] += grav_mass * y_diff / dist;
-				}
+				int real_j = j % nBodies;
+				int x_t = 2 * real_j;
+				int y_t = x_t + 1;
+				long double x_diff = bodies[real_j].x - bodies[i].x;
+				long double y_diff = bodies[real_j].y - bodies[i].y;
+				long double dist = hypotl(x_diff, y_diff);
+				dist *= dist * dist;
+				long double without_mass_x = G * x_diff / dist;
+				accel[x]   += without_mass_x * bodies[real_j].mass;
+				accel[x_t] -= without_mass_x * bodies[i].mass;
+				long double without_mass_y = G * y_diff / dist;
+				accel[y]   += without_mass_y * bodies[real_j].mass;
+				accel[y_t] -= without_mass_y * bodies[i].mass;
 			}
 		}
-
-		for (int z = 1; z < np; z++) {
-			int indx = z;
-			if (iteration != 0) {
-				MPI_Waitany(np - 1, receive_requests, &indx, MPI_STATUSES_IGNORE);
-				indx++;
-			}
+		//fprintf(stderr, "compute time: %f, %d\n", seconds() - start, numIters); // 406351
 		
-			//int sender = Front();
-			//int sender = (self - z + np) % np;
-			int sender = (self - indx + np) % np;
-			int remoteStart = displs[sender] / 5;
-			int remoteEnd = remoteStart + counts[sender] / 5;
-			/*if (iteration != 0) {
-				MPI_Wait(&receive_requests[z - 1], MPI_STATUS_IGNORE);
-				
-				MPI_Recv(&bodies[remoteStart], counts[sender], MPI_LONG_DOUBLE, sender, 0,
-					MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-			}*/
-			
-			#pragma omp parallel for	
-			for (int i = myStart; i < myEnd; i++)
-			{
-				int x = 2 * i, y = 2 * i + 1;
-				//accel[x] = accel[y] = 0.0;
-				for (int j = remoteStart; j < remoteEnd; j++)
-				{
-					if (i != j)
-					{
-						long double grav_mass = G * bodies[j].mass;
-						long double x_diff = bodies[j].x - bodies[i].x;
-						long double y_diff = bodies[j].y - bodies[i].y;
-						long double dist = hypotl(x_diff, y_diff);
-						dist = dist * dist * dist;
-						accel[x] += grav_mass * x_diff / dist;
-						accel[y] += grav_mass * y_diff / dist;
-					}
-				}
-			}
-		}
+		start = seconds();
+		MPI_Allreduce(MPI_IN_PLACE, accel, 2 * nBodies, MPI_LONG_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+		//fprintf(stderr, "communication time: %f\n", seconds() - start);
 		
-		if (iteration != 0) {
-			MPI_Waitall(np - 1, requests, MPI_STATUSES_IGNORE);
-		}
-		
-		for (int i = myStart; i < myEnd; i++)
+		for (int i = 0; i < nBodies; i++)
 		{
 			int x = 2 * i, y = 2 * i + 1;
 			
@@ -343,19 +321,7 @@ void simulateDistributed(body *bodies, int nBodies)
 			bodies[i].vx += accel[x] * delta_t;
 			bodies[i].vy += accel[y] * delta_t;
 		}
-		calc_time += seconds() - start;
-		
-		if (iteration != num_steps - 1)
-		{
-			for (int i = 1; i < np; i++) {
-				int receiver = (self + i) % np;
-				MPI_Isend(&bodies[myStart], counts[self], MPI_LONG_DOUBLE, receiver, 0, MPI_COMM_WORLD,
-					&requests[i - 1]);
-			}
-		} else {
-			MPI_Allgatherv(MPI_IN_PLACE, counts[self], MPI_LONG_DOUBLE, bodies,
-			counts, displs, MPI_LONG_DOUBLE, MPI_COMM_WORLD);
-		}
+
 		
 		//saveImage(iteration, bodies, nBodies, &params);
 	}
@@ -363,8 +329,7 @@ void simulateDistributed(body *bodies, int nBodies)
 	
 	//fprintf(stderr, "gather share: %f\n", gather_time / (calc_time + gather_time));
 	
-	free(receive_requests);
-	free(requests);
+	free(columnDist);
 	free(counts);
 	free(accel);
 }
@@ -388,6 +353,8 @@ void simulate(body *bodies, int nBodies)
 			accel[i] = 0.0;
 		}
 	
+		int numIters = 0;
+		double start = seconds();
 		for (int i = 0, x = 0; i < nBodies; i++, x += 2)
 		{
 			int y = x + 1;
@@ -404,8 +371,10 @@ void simulate(body *bodies, int nBodies)
 				long double without_mass_y = G * y_diff / dist;
 				accel[y]   += without_mass_y * bodies[j].mass;
 				accel[y_t] -= without_mass_y * bodies[i].mass;
+				numIters++;
 			}
 		}
+		fprintf(stderr, "compute time: %f\, %d\n", seconds() - start, numIters); // 406351
 		
 		for (int i = 0; i < nBodies; i++)
 		{
