@@ -284,7 +284,7 @@ void simulateDistributed(body *bodies, int nBodies)
 			accel[i] = 0.0;
 		}
 	
-		double start = seconds();
+		//double start = seconds();
 		for (int i = myStart, x = 2 * i; i < myEnd; i++, x += 2)
 		{
 			int y = x + 1;
@@ -307,7 +307,7 @@ void simulateDistributed(body *bodies, int nBodies)
 		}
 		//fprintf(stderr, "compute time: %f, %d\n", seconds() - start, numIters); // 406351
 		
-		start = seconds();
+		//start = seconds();
 		MPI_Allreduce(MPI_IN_PLACE, accel, 2 * nBodies, MPI_LONG_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 		//fprintf(stderr, "communication time: %f\n", seconds() - start);
 		
@@ -336,8 +336,13 @@ void simulateDistributed(body *bodies, int nBodies)
 
 void simulate(body *bodies, int nBodies)
 {
-	long double *accel =
-		malloc(2 * nBodies * sizeof(long double));
+	int num_threads;
+	#pragma omp parallel
+	num_threads = omp_get_num_threads();
+	fprintf(stderr, "num threads: %d\n", num_threads);
+
+	long double *allAccel =
+		malloc(num_threads * 2 * nBodies * sizeof(long double));
 		
 	long double delta_t_squared = delta_t * delta_t;
 	
@@ -349,48 +354,58 @@ void simulate(body *bodies, int nBodies)
 	
 	for (int iteration = 0; iteration < num_steps; iteration++)
 	{
-		for (int i = 0; i < 2 * nBodies; i++) {
-			accel[i] = 0.0;
-		}
-	
-		int numIters = 0;
-		double start = seconds();
-		for (int i = 0, x = 0; i < nBodies; i++, x += 2)
+		#pragma omp parallel
 		{
-			int y = x + 1;
-			for (int j = i + 1, x_t = 2 * j; j < nBodies; j++, x_t += 2)
+			long double *accel = &allAccel[omp_get_thread_num() * 2 * nBodies];
+			for (int i = 0; i < 2 * nBodies; i++) {
+				accel[i] = 0.0;
+			}
+
+			#pragma omp for
+			for (int i = 0; i < nBodies; i++)
 			{
-				int y_t = x_t + 1;
-				long double x_diff = bodies[j].x - bodies[i].x;
-				long double y_diff = bodies[j].y - bodies[i].y;
-				long double dist = hypotl(x_diff, y_diff);
-				dist *= dist * dist;
-				long double without_mass_x = G * x_diff / dist;
-				accel[x]   += without_mass_x * bodies[j].mass;
-				accel[x_t] -= without_mass_x * bodies[i].mass;
-				long double without_mass_y = G * y_diff / dist;
-				accel[y]   += without_mass_y * bodies[j].mass;
-				accel[y_t] -= without_mass_y * bodies[i].mass;
-				numIters++;
+				int x = 2 * i;
+				int y = x + 1;
+				for (int j = i + 1, x_t = 2 * j; j < nBodies; j++, x_t += 2)
+				{
+					int y_t = x_t + 1;
+					long double x_diff = bodies[j].x - bodies[i].x;
+					long double y_diff = bodies[j].y - bodies[i].y;
+					long double dist = hypotl(x_diff, y_diff);
+					dist *= dist * dist;
+					long double without_mass_x = G * x_diff / dist;
+					accel[x]   += without_mass_x * bodies[j].mass;
+					accel[x_t] -= without_mass_x * bodies[i].mass;
+					long double without_mass_y = G * y_diff / dist;
+					accel[y]   += without_mass_y * bodies[j].mass;
+					accel[y_t] -= without_mass_y * bodies[i].mass;
+				}
+			}
+			
+			#pragma omp for
+			for (int i = 0; i < 2 * nBodies; i++)
+			{
+				for (int j = 1; j < num_threads; j++)
+					allAccel[i] += allAccel[j * 2 * nBodies + i];
 			}
 		}
-		fprintf(stderr, "compute time: %f\, %d\n", seconds() - start, numIters); // 406351
+		
 		
 		for (int i = 0; i < nBodies; i++)
 		{
 			int x = 2 * i, y = x + 1;
 			
-			bodies[i].x += bodies[i].vx * delta_t + 0.5 * accel[x] * delta_t_squared;
-			bodies[i].y += bodies[i].vy * delta_t + 0.5 * accel[y] * delta_t_squared;
+			bodies[i].x += bodies[i].vx * delta_t + 0.5 * allAccel[x] * delta_t_squared;
+			bodies[i].y += bodies[i].vy * delta_t + 0.5 * allAccel[y] * delta_t_squared;
 			
-			bodies[i].vx += accel[x] * delta_t;
-			bodies[i].vy += accel[y] * delta_t;
+			bodies[i].vx += allAccel[x] * delta_t;
+			bodies[i].vy += allAccel[y] * delta_t;
 		}
 		
 		//saveImage(iteration, bodies, nBodies, &params);
 	}
 	
-	free(accel);
+	free(allAccel);
 }
 
 static inline long double relative_error(long double a, long double b)
@@ -425,8 +440,8 @@ int main(int argc, char *argv[])
     }
 
 	double start = seconds();
-	//simulate(bodies, numBodies);
-    simulateDistributed(bodies, numBodies);
+	simulate(bodies, numBodies);
+    //simulateDistributed(bodies, numBodies);
     fprintf(stderr, "time: %f\n", seconds() - start);
     
     
