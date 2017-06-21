@@ -382,11 +382,16 @@ void simulate(body *bodies, int nBodies)
 				}
 			}
 			
-			#pragma omp for
-			for (int i = 0; i < 2 * nBodies; i++)
+			// Iterave over j in the the outer loop so continous pieces of memory
+			// will be accessed in the inner loop
+			for (int j = 1; j < num_threads; j++)
 			{
-				for (int j = 1; j < num_threads; j++)
-					allAccel[i] += allAccel[j * 2 * nBodies + i];
+				long double *accel = &allAccel[j * 2 * nBodies];
+				#pragma omp for
+				for (int i = 0; i < 2 * nBodies; i++)
+				{
+					allAccel[i] += accel[i];
+				}
 			}
 		}
 		
