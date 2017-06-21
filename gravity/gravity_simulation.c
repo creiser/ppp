@@ -214,17 +214,16 @@ static inline long double min(long double a, long double b)
 	return a < b ? a : b;
 }
 
-static const int num_steps = 100;
-static const long double delta_t = 3.16e10;
+static const int num_steps = 100; // 366
+static const long double delta_t = 3.16e10; // 86400
 
-int self;
-int np;
+static int self;
+static int np;
 
-void static inline calculateAccel(const body *bodies, long double *accel, 
+static inline void calculateAccel(const body *bodies, long double *accel, 
 	int x, int y, int i, int j)
 {
-	int x_t = 2 * j;
-	int y_t = x_t + 1;
+	int x_t = 2 * j, y_t = x_t + 1;
 	long double x_diff = bodies[j].x - bodies[i].x;
 	long double y_diff = bodies[j].y - bodies[i].y;
 	long double dist = hypotl(x_diff, y_diff);
@@ -239,8 +238,14 @@ void static inline calculateAccel(const body *bodies, long double *accel,
 
 void simulateDistributed(body *bodies, int nBodies)
 {
-	long double *accel =
-		malloc(2 * nBodies * sizeof(long double));
+	int num_threads;
+	#pragma omp parallel
+	num_threads = omp_get_num_threads();
+	if (self == 0)
+		fprintf(stderr, "num threads: %d\n", num_threads);
+
+	long double *allAccel =
+		malloc(num_threads * 2 * nBodies * sizeof(long double));
 		
 	long double delta_t_squared = delta_t * delta_t;
 	
@@ -253,9 +258,6 @@ void simulateDistributed(body *bodies, int nBodies)
 		myEnd = myStart + (nBodies / np + (i < nBodies % np ? 1 : 0));
 	}
 	
-	printf("self: %d, myStart: %d, myEnd: %d\n",
-    	self, myStart, myEnd);
-	
 	// Use hardcoded path for testing.
 	struct ImgParams params;
 	params.imgFilePrefix = "iter";
@@ -264,45 +266,61 @@ void simulateDistributed(body *bodies, int nBodies)
 
 	for (int iteration = 0; iteration < num_steps; iteration++)
 	{
-		for (int i = 0; i < 2 * nBodies; i++) {
-			accel[i] = 0.0;
-		}
-	
-		for (int i = myStart, x = 2 * i; i < myEnd; i++, x += 2)
+		#pragma omp parallel
 		{
-			// columnDist specifies how many acceleration values are
-			// calculated locally. Only about half of the acceleration
-			// values need to be calculated locally due to Newton's
-			// optimization. The other half will be calculated by other processes.
-			int columnDist = nBodies / 2 -
-    			((nBodies % 2 == 0 && i >= nBodies / 2) ? 1 : 0);
-			int y = x + 1;
-			for (int j = i + 1; j < i + 1 + columnDist; j++)
+			long double *accel = &allAccel[omp_get_thread_num() * 2 * nBodies];
+			for (int i = 0; i < 2 * nBodies; i++) {
+				accel[i] = 0.0;
+			}
+
+			#pragma omp for
+			for (int i = myStart; i < myEnd; i++)
 			{
-				calculateAccel(bodies, accel, x, y, i, j % nBodies);
+				// columnDist specifies how many acceleration values are
+				// calculated locally. Only about half of the acceleration
+				// values need to be calculated locally due to Newton's
+				// optimization. The other half will be calculated by other processes.
+				int columnDist = nBodies / 2 -
+    				((nBodies % 2 == 0 && i >= nBodies / 2) ? 1 : 0);
+				int x = 2 * i, y = x + 1;
+				for (int j = i + 1; j < i + 1 + columnDist; j++)
+				{
+					calculateAccel(bodies, accel, x, y, i, j % nBodies);
+				}
+			}
+			
+			// Iterave over j in the the outer loop so continous pieces of memory
+			// will be accessed in the inner loop
+			for (int j = 1; j < num_threads; j++)
+			{
+				long double *accel = &allAccel[j * 2 * nBodies];
+				#pragma omp for
+				for (int i = 0; i < 2 * nBodies; i++)
+				{
+					allAccel[i] += accel[i];
+				}
 			}
 		}
 
-		MPI_Allreduce(MPI_IN_PLACE, accel, 2 * nBodies, MPI_LONG_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, allAccel, 2 * nBodies, MPI_LONG_DOUBLE,
+			MPI_SUM, MPI_COMM_WORLD);
 
 		for (int i = 0; i < nBodies; i++)
 		{
 			int x = 2 * i, y = 2 * i + 1;
 			
-			bodies[i].x += bodies[i].vx * delta_t + 0.5 * accel[x] * delta_t_squared;
-			bodies[i].y += bodies[i].vy * delta_t + 0.5 * accel[y] * delta_t_squared;
+			bodies[i].x += bodies[i].vx * delta_t + 0.5 * allAccel[x] * delta_t_squared;
+			bodies[i].y += bodies[i].vy * delta_t + 0.5 * allAccel[y] * delta_t_squared;
 			
-			bodies[i].vx += accel[x] * delta_t;
-			bodies[i].vy += accel[y] * delta_t;
+			bodies[i].vx += allAccel[x] * delta_t;
+			bodies[i].vy += allAccel[y] * delta_t;
 		}
-
-		//saveImage(iteration, bodies, nBodies, &params);
+	
+		if (self == 0 && iteration % 250 == 0)
+			saveImage(iteration, bodies, nBodies, &params);
 	}
-	
-	
-	//fprintf(stderr, "gather share: %f\n", gather_time / (calc_time + gather_time));
-	
-	free(accel);
+
+	free(allAccel);
 }
 
 void simulate(body *bodies, int nBodies)
@@ -335,8 +353,7 @@ void simulate(body *bodies, int nBodies)
 			#pragma omp for
 			for (int i = 0; i < nBodies; i++)
 			{
-				int x = 2 * i;
-				int y = x + 1;
+				int x = 2 * i, y = x + 1;
 				for (int j = i + 1, x_t = 2 * j; j < nBodies; j++, x_t += 2)
 				{
 					calculateAccel(bodies, accel, x, y, i, j);
@@ -367,7 +384,8 @@ void simulate(body *bodies, int nBodies)
 			bodies[i].vy += allAccel[y] * delta_t;
 		}
 		
-		//saveImage(iteration, bodies, nBodies, &params);
+		if (self == 0 && iteration % 50 == 0)
+			saveImage(iteration, bodies, nBodies, &params);
 	}
 	
 	free(allAccel);
@@ -389,6 +407,7 @@ int main(int argc, char *argv[])
 	MPI_Comm_size(MPI_COMM_WORLD, &np);
 	MPI_Comm_rank(MPI_COMM_WORLD, &self);
     
+    // Alternative input: "sonne_erde.dat"
 	int numBodies;
 	body *bodies;
     if (readBodiesFromFile("twogalaxies.dat", &bodies, &numBodies)) {
@@ -416,6 +435,7 @@ int main(int argc, char *argv[])
 			printf("Calculated impulse: px=%Lg, py=%Lg\n", px, py);
 		}
 		
+		// Alternative test: "sonne_erde_nach_366_Tagen.dat"
 		body *reference_bodies;
 		if (readBodiesFromFile("twogalaxies_nach_100_Schritten.dat",
 				&reference_bodies, &numBodies)) {
