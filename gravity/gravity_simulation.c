@@ -1,3 +1,4 @@
+#include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,7 +92,6 @@ int readBodiesFromFile(char* filename, body **bodies, int *n)
     return 0;
 }
 
-
 /*
  * Schreibe 'n' Koerper aus dem Array 'bodies' in die
  * durch das Dateihandle 'f' bezeichnete Datei im ".dat" Format.
@@ -167,6 +167,7 @@ struct ImgParams {
 void saveImage(int imgNum, const body *bodies, int nBodies,
                const struct ImgParams *params)
 {
+
     int i, x, y;
     const int pixels = params->imgWidth * params->imgHeight;
     char name[strlen(params->imgFilePrefix)+10];
@@ -204,23 +205,122 @@ static double seconds()
     return (double)tv.tv_sec + ((double)tv.tv_usec)/1000000.0;
 }
 
-static inline long double max(long double a, long double b) 
-{
-	return a > b ? a : b;
-}
+static int num_steps;
+static long double delta_t;
+static long double delta_t_squared;
+static struct ImgParams imgParams;
+static int image_save_interval;
 
-static inline long double min(long double a, long double b) 
+/* Returns true if an image should be saved in the passed iteration. */
+static inline int shouldSaveImage(int iteration)
 {
-	return a < b ? a : b;
+	return iteration != num_steps - 1 &&
+		image_save_interval != -1 && iteration % image_save_interval == 0;
 }
-
-static const int num_steps = 100; // 366
-static const long double delta_t = 3.16e10; // 86400
 
 static int self;
 static int np;
 
 static inline void calculateAccel(const body *bodies, long double *accel, 
+	int x, int y, int i, int j)
+{
+	// This loop could be unrolled, but since we get rid of this problem
+	// with the Newton optimization anyway, we do not address it here.
+	if (i != j)
+	{
+		long double grav_mass = G * bodies[j].mass;
+		long double x_diff = bodies[j].x - bodies[i].x;
+		long double y_diff = bodies[j].y - bodies[i].y;
+		long double dist = hypotl(x_diff, y_diff);
+		dist *= dist * dist;
+		accel[x] += grav_mass * x_diff / dist;
+		accel[y] += grav_mass * y_diff / dist;
+	}
+}
+
+void simulateSequential(body *bodies, int nBodies)
+{
+	long double *accel =
+		malloc(2 * nBodies * sizeof(long double));
+	
+	for (int iteration = 0; iteration < num_steps; iteration++)
+	{
+		for (int i = 0; i < nBodies; i++)
+		{
+			int x = 2 * i, y = 2 * i + 1;
+			accel[x] = accel[y] = 0.0;
+			for (int j = 0; j < nBodies; j++)
+				calculateAccel(bodies, accel, x, y, i, j);
+		}
+		
+		for (int i = 0; i < nBodies; i++)
+		{
+			int x = 2 * i, y = 2 * i + 1;
+			bodies[i].x += bodies[i].vx * delta_t + 0.5 * accel[x] * delta_t_squared;
+			bodies[i].y += bodies[i].vy * delta_t + 0.5 * accel[y] * delta_t_squared;
+			bodies[i].vx += accel[x] * delta_t;
+			bodies[i].vy += accel[y] * delta_t;
+		}
+		
+		if (self == 0 && shouldSaveImage(iteration))
+			saveImage(iteration, bodies, nBodies, &imgParams);
+	}
+	
+	free(accel);
+}
+
+void simulateDistributed(body *bodies, int nBodies)
+{
+	long double *accel =
+		malloc(2 * nBodies * sizeof(long double));
+	
+	const int body_struct_size = 5;
+	int *counts = malloc(2 * np * sizeof(int));
+    int *displs = &counts[np];
+	displs[0] = 0;
+    counts[0] = (nBodies / np + (0 < nBodies % np ? 1 : 0)) * body_struct_size;
+    for (int i = 1; i < np; i++)
+    {
+		counts[i] = (nBodies / np + (i < nBodies % np ? 1 : 0)) * body_struct_size;
+		displs[i] = displs[i-1] + counts[i-1];
+    }
+    int myStart = displs[self] / body_struct_size;
+    int myEnd = myStart + counts[self] / body_struct_size;
+    
+	for (int iteration = 0; iteration < num_steps; iteration++)
+	{
+		#pragma omp parallel for
+		for (int i = myStart; i < myEnd; i++)
+		{
+			int x = 2 * i, y = 2 * i + 1;
+			accel[x] = accel[y] = 0.0;
+			for (int j = 0; j < nBodies; j++)
+				calculateAccel(bodies, accel, x, y, i, j);
+		}
+	
+		for (int i = myStart; i < myEnd; i++)
+		{
+			int x = 2 * i, y = 2 * i + 1;
+			bodies[i].x += bodies[i].vx * delta_t + 0.5 * accel[x] * delta_t_squared;
+			bodies[i].y += bodies[i].vy * delta_t + 0.5 * accel[y] * delta_t_squared;
+			bodies[i].vx += accel[x] * delta_t;
+			bodies[i].vy += accel[y] * delta_t;
+		}
+
+		// Body mass is also sent here, which is an overhead, since it does not change over
+		// time. In the optimized version this issue is addressed as a side effect
+		// by communicating the acceleration values instead.
+		MPI_Allgatherv(MPI_IN_PLACE, counts[self], MPI_LONG_DOUBLE, bodies,
+			counts, displs, MPI_LONG_DOUBLE, MPI_COMM_WORLD);
+
+		if (self == 0 && shouldSaveImage(iteration))
+			saveImage(iteration, bodies, nBodies, &imgParams);
+	}
+	free(counts);
+	free(accel);
+}
+
+static inline void calculateAccelOptimized(const body *bodies, long double *accel, 
 	int x, int y, int i, int j)
 {
 	int x_t = 2 * j, y_t = x_t + 1;
@@ -236,18 +336,16 @@ static inline void calculateAccel(const body *bodies, long double *accel,
 	accel[y_t] -= without_mass_y * bodies[i].mass;
 }
 
-void simulateDistributed(body *bodies, int nBodies)
+void simulateDistributedOptimized(body *bodies, int nBodies)
 {
 	int num_threads;
 	#pragma omp parallel
 	num_threads = omp_get_num_threads();
 	if (self == 0)
-		fprintf(stderr, "num threads: %d\n", num_threads);
+		fprintf(stderr, "Number of threads: %d\n", num_threads);
 
 	long double *allAccel =
 		malloc(num_threads * 2 * nBodies * sizeof(long double));
-		
-	long double delta_t_squared = delta_t * delta_t;
 	
 	// Calculate the 'i' share as usual, but every process
 	// will do all the 'j's and therefore receive all bodies
@@ -257,12 +355,6 @@ void simulateDistributed(body *bodies, int nBodies)
 		myStart = myEnd;
 		myEnd = myStart + (nBodies / np + (i < nBodies % np ? 1 : 0));
 	}
-	
-	// Use hardcoded path for testing.
-	struct ImgParams params;
-	params.imgFilePrefix = "iter";
-    params.imgWidth = params.imgHeight = 200;
-    params.width = params.height = 2.0e21;
 
 	for (int iteration = 0; iteration < num_steps; iteration++)
 	{
@@ -285,7 +377,7 @@ void simulateDistributed(body *bodies, int nBodies)
 				int x = 2 * i, y = x + 1;
 				for (int j = i + 1; j < i + 1 + columnDist; j++)
 				{
-					calculateAccel(bodies, accel, x, y, i, j % nBodies);
+					calculateAccelOptimized(bodies, accel, x, y, i, j % nBodies);
 				}
 			}
 			
@@ -308,183 +400,149 @@ void simulateDistributed(body *bodies, int nBodies)
 		for (int i = 0; i < nBodies; i++)
 		{
 			int x = 2 * i, y = 2 * i + 1;
-			
 			bodies[i].x += bodies[i].vx * delta_t + 0.5 * allAccel[x] * delta_t_squared;
 			bodies[i].y += bodies[i].vy * delta_t + 0.5 * allAccel[y] * delta_t_squared;
-			
 			bodies[i].vx += allAccel[x] * delta_t;
 			bodies[i].vy += allAccel[y] * delta_t;
 		}
-	
-		if (self == 0 && iteration % 250 == 0)
-			saveImage(iteration, bodies, nBodies, &params);
+		
+		if (self == 0 && shouldSaveImage(iteration))
+			saveImage(iteration, bodies, nBodies, &imgParams);
 	}
 
 	free(allAccel);
 }
 
-void simulate(body *bodies, int nBodies)
-{
-	int num_threads;
-	#pragma omp parallel
-	num_threads = omp_get_num_threads();
-	fprintf(stderr, "num threads: %d\n", num_threads);
-
-	long double *allAccel =
-		malloc(num_threads * 2 * nBodies * sizeof(long double));
-		
-	long double delta_t_squared = delta_t * delta_t;
-	
-	// Use hardcoded path for testing.
-	struct ImgParams params;
-	params.imgFilePrefix = "iter";
-    params.imgWidth = params.imgHeight = 200;
-    params.width = params.height = 2.0e21;
-	
-	for (int iteration = 0; iteration < num_steps; iteration++)
-	{
-		#pragma omp parallel
-		{
-			long double *accel = &allAccel[omp_get_thread_num() * 2 * nBodies];
-			for (int i = 0; i < 2 * nBodies; i++) {
-				accel[i] = 0.0;
-			}
-
-			#pragma omp for
-			for (int i = 0; i < nBodies; i++)
-			{
-				int x = 2 * i, y = x + 1;
-				for (int j = i + 1, x_t = 2 * j; j < nBodies; j++, x_t += 2)
-				{
-					calculateAccel(bodies, accel, x, y, i, j);
-				}
-			}
-			
-			// Iterave over j in the the outer loop so continous pieces of memory
-			// will be accessed in the inner loop
-			for (int j = 1; j < num_threads; j++)
-			{
-				long double *accel = &allAccel[j * 2 * nBodies];
-				#pragma omp for
-				for (int i = 0; i < 2 * nBodies; i++)
-				{
-					allAccel[i] += accel[i];
-				}
-			}
-		}
-		
-		for (int i = 0; i < nBodies; i++)
-		{
-			int x = 2 * i, y = x + 1;
-			
-			bodies[i].x += bodies[i].vx * delta_t + 0.5 * allAccel[x] * delta_t_squared;
-			bodies[i].y += bodies[i].vy * delta_t + 0.5 * allAccel[y] * delta_t_squared;
-			
-			bodies[i].vx += allAccel[x] * delta_t;
-			bodies[i].vy += allAccel[y] * delta_t;
-		}
-		
-		if (self == 0 && iteration % 50 == 0)
-			saveImage(iteration, bodies, nBodies, &params);
-	}
-	
-	free(allAccel);
+double interactionRate(const int nBodies, const int steps, const double time) {
+    return nBodies * (nBodies - 1) * ((double) steps / time);
 }
 
-static inline long double relative_error(long double a, long double b)
-{
-	return fabsl((a - b) / a);
+void usage() {
+	fprintf(stderr,
+		"[-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file] name_of_input_file\n"
+		"This program takes a .dat file with defined bodies and executes a gravity simulation on it based on the given options.\n"
+		"With the \"-m\" option the implementation can be specified with an integer.\n"
+		"Possible values are 0: sequential, 1: distributed and 2: distributed with Newton\'s 3rd law optimization. \n"
+        "Use \"-S\" to specify the amount of simulation steps. Default: 100\n"
+        "Use \"-t\" to specify the duration of one simulation step. Default: 3.16e10\n"
+		"Use \"-h\" to display this description.\n"
+		"Use \"-o\" to specify the file the simulation result should be saved to. Default: \"out.dat\".\n"
+		"Use \"-I\" to specify the filename prefix of the output image. Default: \"out\".\n"
+		"Use \"-s\" to specify the size (width and height) of the output image in meters. Default: 2.0e21\n"
+		"Use \"-i\" to specify the interval at which output images will be saved. Default: single image generated at the end of the simulation\n"
+		"The input file has to be given as the last argument.\n");
 }
 
-/*
- * Testprogramm fuer readBodies.
- */
+#define GRAVITY_SEQUENTIAL 0
+#define GRAVITY_DISTRIBUTED 1
+#define GRAVITY_DISTRIBUTED_OPTIMIZED 2
+
 int main(int argc, char *argv[])
 {
-    int verbose = 0;
-    
     MPI_Init(&argc, &argv);
 	MPI_Comm_size(MPI_COMM_WORLD, &np);
 	MPI_Comm_rank(MPI_COMM_WORLD, &self);
     
-    // Alternative input: "sonne_erde.dat"
+    char *output_file = "out.dat";
+    int option;
+    int implementation = GRAVITY_DISTRIBUTED_OPTIMIZED;
+    num_steps = 100;
+	delta_t = 3.16e10;
+	delta_t_squared = delta_t * delta_t;
+	imgParams.imgFilePrefix = "out";
+    imgParams.imgWidth = imgParams.imgHeight = 200;
+    imgParams.width = imgParams.height = 2.0e21;
+    image_save_interval = -1;
+	
+    while ((option = getopt(argc,argv,"ho:m:S:t:I:s:i:")) != -1) {
+        switch(option) {
+        	case 'h':
+        		usage();
+        		return 0;
+        		break;
+        	case 'o':
+        		output_file = optarg;
+    			break;
+    		case 'm':
+    			implementation = atoi(optarg);
+    			break;
+            case 'S':
+                num_steps = atoi(optarg);
+                break;
+			case 't':
+				delta_t = atoi(optarg);
+        		break;
+    		case 'I':
+    			imgParams.imgFilePrefix = optarg;
+    			break;
+			case 's':
+				imgParams.width = imgParams.height = atoi(optarg);
+				break;
+			case 'i':
+				image_save_interval = atoi(optarg);
+				break;
+        	default:
+                fprintf(stderr, "'%c' is not a defined parameter.", option);
+        		break;
+        }
+    }
+    
 	int numBodies;
 	body *bodies;
-    if (readBodiesFromFile("twogalaxies.dat", &bodies, &numBodies)) {
+    if (readBodiesFromFile(argv[argc - 1], &bodies, &numBodies)) {
     	fprintf(stderr, "Could not read input file\n");
     	return 1;
     }
+    
+    long double px, py;
+    if (self == 0)
+    {
+    	totalImpulse(bodies, numBodies, &px, &py);
+		printf("Impulse before simulation: px=%Lg, py=%Lg\n", px, py);
+    }
 
 	double start = seconds();
-	//simulate(bodies, numBodies);
-    simulateDistributed(bodies, numBodies);
+	if (implementation == GRAVITY_SEQUENTIAL)
+		simulateSequential(bodies, numBodies);
+	else if (implementation == GRAVITY_DISTRIBUTED)
+		simulateDistributed(bodies, numBodies);
+	else if (implementation == GRAVITY_DISTRIBUTED_OPTIMIZED)
+		simulateDistributedOptimized(bodies, numBodies);
     
     if (self == 0)
     {
-    	fprintf(stderr, "time: %f\n", seconds() - start);
+    	double calculationTime = seconds() - start;
+    	printf("Time: %f\n", calculationTime);
+    	
+    	saveImage(num_steps - 1, bodies, numBodies, &imgParams);
     
-    	long double px, py;
-		if (verbose) {
-			printf("Calculated results:\n");
-			for (int i=0; i<numBodies && i < 5; i++) {
-			printf("Body %d: mass = %Lg, x = %Lg, y = %Lg, vx = %Lg, vy = %Lg\n",
-				   i, bodies[i].mass, bodies[i].x, bodies[i].y,
-				   bodies[i].vx, bodies[i].vy);
-			}
-			totalImpulse(bodies, numBodies, &px, &py);
-			printf("Calculated impulse: px=%Lg, py=%Lg\n", px, py);
-		}
+    	totalImpulse(bodies, numBodies, &px, &py);
+		printf("Impulse after simulation: px=%Lg, py=%Lg\n", px, py);
 		
-		// Alternative test: "sonne_erde_nach_366_Tagen.dat"
+		printf("Interaction rate of the simulation: %f\n",
+			interactionRate(numBodies, num_steps, calculationTime));
+		
+    	// Write to output file and read in again to get the same precision
+    	// as the reference file was written with.
+		writeBodiesToFile(output_file, bodies, numBodies);
+		
+		// Check if all values match the specified reference file.
+		readBodiesFromFile(output_file, &bodies, &numBodies);
 		body *reference_bodies;
 		if (readBodiesFromFile("twogalaxies_nach_100_Schritten.dat",
 				&reference_bodies, &numBodies)) {
 			fprintf(stderr, "Could not read input file\n");
 			return 1;
 		}
-		
-		if (verbose) {
-			printf("Reference results:\n");
-			for (int i=0; i<numBodies && i < 5; i++) {
-			printf("Body %d: mass = %Lg, x = %Lg, y = %Lg, vx = %Lg, vy = %Lg\n",
-				   i, reference_bodies[i].mass, reference_bodies[i].x, reference_bodies[i].y,
-				   reference_bodies[i].vx, reference_bodies[i].vy);
-			}
-			totalImpulse(reference_bodies, numBodies, &px, &py);
-			printf("Reference impulse: px=%Lg, py=%Lg\n", px, py);
-		}
-    
-    	// Write to output file and read in again to get the same precision
-    	// as the reference file was written with.
-		writeBodiesToFile("out.dat", bodies, numBodies);
-		readBodiesFromFile("out.dat", &bodies, &numBodies); 
-
-		// Calculate the maximum relative error between calculated and reference values.
-		long double max_diff_x = 0;
-		long double max_diff_y = 0;
-		long double max_diff_vx = 0;
-		long double max_diff_vy = 0;
 		int num_different_vals = 0;
 		for (int i=0; i<numBodies; i++) {
-			long double diff_x = relative_error(bodies[i].x, reference_bodies[i].x);
-			long double diff_y = relative_error(bodies[i].y, reference_bodies[i].y);
-			long double diff_vx = relative_error(bodies[i].vx, reference_bodies[i].vx);
-			long double diff_vy = relative_error(bodies[i].vy, reference_bodies[i].vy);
-			max_diff_x = max(diff_x, max_diff_x);
-			max_diff_y = max(diff_y, max_diff_y);
-			max_diff_vx = max(diff_vx, max_diff_vx);
-			max_diff_vy = max(diff_vy, max_diff_vy);
 			num_different_vals += (bodies[i].x != reference_bodies[i].x) + 
 				(bodies[i].y != reference_bodies[i].y) +
 				(bodies[i].vx != reference_bodies[i].vx) +
 				(bodies[i].vy != reference_bodies[i].vy);
 		}
-		printf("max_diff_x: %Lg, max_diff_y: %Lg, max_diff_vx: %Lg, max_diff_vy: %Lg\n",
-			max_diff_x, max_diff_y, max_diff_vx, max_diff_vy);
 		printf("Number of different values: %d\n", num_different_vals);
 	}
     	
 	MPI_Finalize();
-
-    return 0;
 }
