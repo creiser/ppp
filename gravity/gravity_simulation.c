@@ -253,6 +253,7 @@ void simulateSequential(body *bodies, int nBodies)
 				calculateAccel(bodies, accel, x, y, i, j);
 		}
 		
+		// It is important to update the positions before the velocities.
 		for (int i = 0; i < nBodies; i++)
 		{
 			int x = 2 * i, y = 2 * i + 1;
@@ -274,6 +275,7 @@ void simulateDistributed(body *bodies, int nBodies)
 	long double *accel =
 		malloc(2 * nBodies * sizeof(long double));
 	
+	// Calculate the share of each process as usual.
 	const int body_struct_size = 5;
 	int *counts = malloc(2 * np * sizeof(int));
     int *displs = &counts[np];
@@ -289,6 +291,8 @@ void simulateDistributed(body *bodies, int nBodies)
     
 	for (int iteration = 0; iteration < num_steps; iteration++)
 	{
+		// Since different processes will not write to the same position
+		// in the accel array this is very straightforward to parallelize.
 		#pragma omp parallel for
 		for (int i = myStart; i < myEnd; i++)
 		{
@@ -298,6 +302,8 @@ void simulateDistributed(body *bodies, int nBodies)
 				calculateAccel(bodies, accel, x, y, i, j);
 		}
 	
+		// This could be parallized with an if clause, but for the provided input files
+		// there is no need to parallelize this.
 		for (int i = myStart; i < myEnd; i++)
 		{
 			int x = 2 * i, y = 2 * i + 1;
@@ -344,11 +350,13 @@ void simulateDistributedOptimized(body *bodies, int nBodies)
 	if (self == 0)
 		fprintf(stderr, "Number of threads: %d\n", num_threads);
 
+	// Every thread gets its own acceleration array to avoid
+	// update conflicts.
 	long double *allAccel =
 		malloc(num_threads * 2 * nBodies * sizeof(long double));
 	
-	// Calculate the 'i' share as usual, but every process
-	// will do all the 'j's and therefore receive all bodies
+	// Calculate the processes share, only we do not need 
+	// all the counts and offsets because no Gather is performed.
 	int myStart = 0;
 	int myEnd = (nBodies / np + (0 < nBodies % np ? 1 : 0));
 	for (int i = 1; i <= self; i++) {
@@ -419,17 +427,25 @@ double interactionRate(const int nBodies, const int steps, const double time) {
 
 void usage() {
 	fprintf(stderr,
-		"[-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file] name_of_input_file\n"
-		"This program takes a .dat file with defined bodies and executes a gravity simulation on it based on the given options.\n"
+		"[-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file] "
+		"[-I image_prefix] [-s image_size] [-i image_interval] [-r reference_file] "
+		"name_of_input_file\n"
+		"This program takes a .dat file with defined bodies and executes a gravity simulation on "
+		"it based on the given options.\n"
 		"With the \"-m\" option the implementation can be specified with an integer.\n"
-		"Possible values are 0: sequential, 1: distributed and 2: distributed with Newton\'s 3rd law optimization. \n"
+		"Possible values are\n\t0: sequential\n\t1: distributed\n\t2: distributed with Newton\'s "
+		"3rd law optimization. \n"
         "Use \"-S\" to specify the amount of simulation steps. Default: 100\n"
         "Use \"-t\" to specify the duration of one simulation step. Default: 3.16e10\n"
 		"Use \"-h\" to display this description.\n"
-		"Use \"-o\" to specify the file the simulation result should be saved to. Default: \"out.dat\".\n"
+		"Use \"-o\" to specify the file the simulation result should be saved to. "
+		"Default: \"out.dat\".\n"
 		"Use \"-I\" to specify the filename prefix of the output image. Default: \"out\".\n"
-		"Use \"-s\" to specify the size (width and height) of the output image in meters. Default: 2.0e21\n"
-		"Use \"-i\" to specify the interval at which output images will be saved. Default: single image generated at the end of the simulation\n"
+		"Use \"-s\" to specify the size (width and height) of the output image in meters. "
+		"Default: 2.0e21\n"
+		"Use \"-i\" to specify the interval at which output images will be saved. "
+		"Default: single image generated at the end of the simulation\n"
+		"Use \"-r\" to specify a reference .dat file the output will be compared to.\n"
 		"The input file has to be given as the last argument.\n");
 }
 
@@ -444,17 +460,17 @@ int main(int argc, char *argv[])
 	MPI_Comm_rank(MPI_COMM_WORLD, &self);
     
     char *output_file = "out.dat";
+    char *reference_file = NULL;
     int option;
     int implementation = GRAVITY_DISTRIBUTED_OPTIMIZED;
     num_steps = 100;
 	delta_t = 3.16e10;
-	delta_t_squared = delta_t * delta_t;
 	imgParams.imgFilePrefix = "out";
     imgParams.imgWidth = imgParams.imgHeight = 200;
     imgParams.width = imgParams.height = 2.0e21;
     image_save_interval = -1;
 	
-    while ((option = getopt(argc,argv,"ho:m:S:t:I:s:i:")) != -1) {
+    while ((option = getopt(argc,argv,"ho:m:S:t:I:s:i:r:")) != -1) {
         switch(option) {
         	case 'h':
         		usage();
@@ -481,11 +497,15 @@ int main(int argc, char *argv[])
 			case 'i':
 				image_save_interval = atoi(optarg);
 				break;
+			case 'r':
+				reference_file = optarg;
+				break;
         	default:
                 fprintf(stderr, "'%c' is not a defined parameter.", option);
         		break;
         }
     }
+    delta_t_squared = delta_t * delta_t;
     
 	int numBodies;
 	body *bodies;
@@ -527,21 +547,24 @@ int main(int argc, char *argv[])
 		writeBodiesToFile(output_file, bodies, numBodies);
 		
 		// Check if all values match the specified reference file.
-		readBodiesFromFile(output_file, &bodies, &numBodies);
-		body *reference_bodies;
-		if (readBodiesFromFile("twogalaxies_nach_100_Schritten.dat",
-				&reference_bodies, &numBodies)) {
-			fprintf(stderr, "Could not read input file\n");
-			return 1;
+		if (reference_file != NULL)
+		{
+			readBodiesFromFile(output_file, &bodies, &numBodies);
+			body *reference_bodies;
+			if (readBodiesFromFile(reference_file,
+					&reference_bodies, &numBodies)) {
+				fprintf(stderr, "Could not read input file\n");
+				return 1;
+			}
+			int num_different_vals = 0;
+			for (int i = 0; i < numBodies; i++) {
+				num_different_vals += (bodies[i].x != reference_bodies[i].x) + 
+					(bodies[i].y != reference_bodies[i].y) +
+					(bodies[i].vx != reference_bodies[i].vx) +
+					(bodies[i].vy != reference_bodies[i].vy);
+			}
+			printf("Number of different values: %d\n", num_different_vals);
 		}
-		int num_different_vals = 0;
-		for (int i=0; i<numBodies; i++) {
-			num_different_vals += (bodies[i].x != reference_bodies[i].x) + 
-				(bodies[i].y != reference_bodies[i].y) +
-				(bodies[i].vx != reference_bodies[i].vx) +
-				(bodies[i].vy != reference_bodies[i].vy);
-		}
-		printf("Number of different values: %d\n", num_different_vals);
 	}
     	
 	MPI_Finalize();
