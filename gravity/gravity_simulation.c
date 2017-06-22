@@ -486,13 +486,13 @@ int main(int argc, char *argv[])
                 num_steps = atoi(optarg);
                 break;
 			case 't':
-				delta_t = atoi(optarg);
+				delta_t = atof(optarg);
         		break;
     		case 'I':
     			imgParams.imgFilePrefix = optarg;
     			break;
 			case 's':
-				imgParams.width = imgParams.height = atoi(optarg);
+				imgParams.width = imgParams.height = atof(optarg);
 				break;
 			case 'i':
 				image_save_interval = atoi(optarg);

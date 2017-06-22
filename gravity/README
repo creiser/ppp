@@ -1,0 +1,46 @@
+
+Für maximalen Komfort haben wir eine Funktion in unser Programm integriert mit der die
+Ausgabedatei unseres Programm mit einer der gegebenen Referenzdateien verglichen werden kann:
+
+./grav -m 2 -t 3.16e10 -S 100 -r twogalaxies_nach_100_Schritten.dat twogalaxies.dat
+./grav -m 0 -t 86400 -S 1 -r sonne_erde_nach_1_Tag.dat sonne_erde.dat
+./grav -m 0 -t 86400 -S 366 -r sonne_erde_nach_366_Tagen.dat sonne_erde.dat
+
+Ausgabe der Hilfefunktion:
+[-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file] [-I image_prefix] [-s image_size] [-i image_interval] [-r reference_file] name_of_input_file
+This program takes a .dat file with defined bodies and executes a gravity simulation on it based on the given options.
+With the "-m" option the implementation can be specified with an integer.
+Possible values are
+	0: sequential
+	1: distributed
+	2: distributed with Newton's 3rd law optimization. 
+Use "-S" to specify the amount of simulation steps. Default: 100
+Use "-t" to specify the duration of one simulation step. Default: 3.16e10
+Use "-h" to display this description.
+Use "-o" to specify the file the simulation result should be saved to. Default: "out.dat".
+Use "-I" to specify the filename prefix of the output image. Default: "out".
+Use "-s" to specify the size (width and height) of the output image in meters. Default: 2.0e21
+Use "-i" to specify the interval at which output images will be saved. Default: single image generated at the end of the simulation
+Use "-r" to specify a reference .dat file the output will be compared to.
+The input file has to be given as the last argument.
+
+
+Optimierungsideen:
+
+Die Beschleunigungswerte zwischen Körpern, die nur eine geringe Anziehungskraft aufeinander aus-
+üben könnten nicht berechnet werden. Man könnte dabei so vorgehen, dass man für ein Körperpaar
+speichert, in den wie viel letzten Berechnungsschritten die Anziehungskraft unter einem
+Threshold-Wert liegt. Wenn in einer bestimmten Anzahl an Berechnungsschritten die Anziehungskraft
+gering war, berechnet man die entsprechenden Beschleunigswerte nicht mehr.
+Periodisch (z. B. alle 100 Schritte) könnte dann überprüft werden, ob eine Veränderung der
+Körperpositionen die Anziehungskraft zwischen dem Körperpaar wieder signifikant gemacht hat.
+Kommt bei dieser erneuten Überprüfung heraus, dass die Anziehungskraft noch immer insignifikant
+ist, kann man den Überprüfungszeitraum weiter erhöhen (Backoff)
+
+
+Man könnte Cluster von Körpern bilden, die nach außen hin als ein großer Körper gesehen werden.
+Im Beispiel von mehreren Galaxien wird jede Galaxie zu einem großen Körper zusammengefasst.
+Dann werden die Anziehungskräfte der Körper, die sich in der selben Galaxie befinden,
+untereinander berechnet, aber nicht die Anziehungskräfte von Körpern, die sich in unterschiedlichen
+Galaxien befinden. Die intergalaktischen Anziehungskräfte werden approximiert durch Berechnung 
+der Anziehungskräfte zwischen den virtuellen Zusammenfassungskörpern der jeweiligen Galaxien.
