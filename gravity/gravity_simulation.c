@@ -283,50 +283,91 @@ void gravity_opt(body **bodies, const int n,
 }
 
 /*
- * Implementation of a optimized sequential gravity simulation. (b)
+ * Implementation of a naive distributed gravity simulation. (b)
  */
 void gravity_dist(body **bodies, const int n,
                    const int steps, const int tDelta) {
+    /* create a type for struct body */
+    const int nr = 7;
+    int blocklengths[] = {1, 1, 1, 1, 1, 1, 1};
+    MPI_Datatype types[] = {MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE};
+    MPI_Datatype mpi_body_type;
+    MPI_Aint offsets[nr];
+
+    offsets[0] = offsetof(body, mass);
+    offsets[1] = offsetof(body, x);
+    offsets[2] = offsetof(body, y);
+    offsets[3] = offsetof(body, vx);
+    offsets[4] = offsetof(body, vy);
+    offsets[5] = offsetof(body, ax);
+    offsets[6] = offsetof(body, ay);
+
+    MPI_Type_create_struct(nr, blocklengths, offsets, types, &mpi_body_type);
+    MPI_Type_commit(&mpi_body_type);
+    
     long double vLength;
-    body *T = (body *) malloc(sizeof(body) * n);
+    int *counts = (int *) malloc(sizeof(int) * np);
+    int *displs = (int *) malloc(sizeof(int) * np);
+    
+    counts[0] = (n%np == 0) ? n/np : (n/np + 1);
+    displs[0] = 0;
+    for (int i = 1; i < np; ++i) {
+        counts[i] = (n%np <= i) ? n/np : (n/np + 1);
+        displs[i] = displs[i-1] + counts[i-1];
+    }
+    
+    body *T = (body *) malloc(sizeof(body) * counts[self]);
     
     for (int s = 0 ; s < steps; ++s) {
-        /*Scatter parts*/
-        //MPI_Scatterv(const void *sendbuf, const int *sendcounts, const int *displs, mpi_body_type, void *recvbuf, int recvcount, mpi_body_type, 0, MPI_COMM_WORLD)
         
-        for (int i = 0; i < n; ++i) {
+#pragma omp parallel for private(vLength)
+        for (int i = 0; i < counts[self]; ++i) {
+            int bI = i + displs[self];
+            long double ax = 0;
+            long double ay = 0;
+            
             for (int j = 0; j < n; ++j) {
-                if (i != j) {
-                    vLength = hypot((*bodies)[j].x - (*bodies)[i].x,
-                                    (*bodies)[j].y - (*bodies)[i].y);
+                if (bI != j) {
+                    vLength = hypot((*bodies)[j].x - (*bodies)[bI].x,
+                                    (*bodies)[j].y - (*bodies)[bI].y);
                     
                     if (vLength != 0) {
-                        T[i].ax += G * (*bodies)[j].mass
-                                   * ((*bodies)[j].x - (*bodies)[i].x)
+                        ax += G * (*bodies)[j].mass
+                                   * ((*bodies)[j].x - (*bodies)[bI].x)
                                    / pow(vLength, 3);
                     }
                     
                     if (vLength != 0) {
-                        T[i].ay += G * (*bodies)[j].mass
-                                   * ((*bodies)[j].y - (*bodies)[i].y)
+                        ay += G * (*bodies)[j].mass
+                                   * ((*bodies)[j].y - (*bodies)[bI].y)
                                    / pow(vLength, 3);
                     }
                 }
             }
             
-            T[i].mass = (*bodies)[i].mass;
-            T[i].vx = (*bodies)[i].vx + T[i].ax * tDelta;
-            T[i].vy = (*bodies)[i].vy + T[i].ay * tDelta;
-            T[i].x = (*bodies)[i].x + (*bodies)[i].vx * tDelta
-                        + 0.5 * T[i].ax * tDelta * tDelta;
-            T[i].y = (*bodies)[i].y + (*bodies)[i].vy * tDelta
-                        + 0.5 * T[i].ay * tDelta * tDelta;
-            T[i].ax = 0;
-            T[i].ay = 0;
+            T[i].mass = (*bodies)[bI].mass;
+            T[i].vx = (*bodies)[bI].vx + ax * tDelta;
+            T[i].vy = (*bodies)[bI].vy + ay * tDelta;
+            T[i].x = (*bodies)[bI].x + (*bodies)[bI].vx * tDelta
+                        + 0.5 * ax * tDelta * tDelta;
+            T[i].y = (*bodies)[bI].y + (*bodies)[bI].vy * tDelta
+                        + 0.5 * ay * tDelta * tDelta;
         }
         
         /*Gather parts*/
-    } 
+        MPI_Gatherv(T, counts[self], mpi_body_type, *bodies, counts, displs,
+                    mpi_body_type, 0, MPI_COMM_WORLD);
+
+        /*Broadcast new body values*/
+        if (s != steps - 1) {
+            MPI_Bcast(*bodies, n, mpi_body_type, 0, MPI_COMM_WORLD);
+        }
+    }
+    
+    free(counts);
+    free(displs);
+    free(T);
+    MPI_Type_free(&mpi_body_type);
 }
 
 /*
@@ -403,36 +444,19 @@ int main(int argc, char *argv[]) {
         MPI_Finalize();
         return 1;
     }
-
-    /* create a type for struct body */
-    const int nr = 7;
-    int blocklengths[] = {1, 1, 1, 1, 1, 1, 1};
-    MPI_Datatype types[] = {MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE};
-    MPI_Datatype mpi_body_type;
-    MPI_Aint offsets[nr];
-
-    offsets[0] = offsetof(body, mass);
-    offsets[1] = offsetof(body, x);
-    offsets[2] = offsetof(body, y);
-    offsets[3] = offsetof(body, vx);
-    offsets[4] = offsetof(body, vy);
-    offsets[5] = offsetof(body, ax);
-    offsets[6] = offsetof(body, ay);
-
-    MPI_Type_create_struct(nr, blocklengths, offsets, types, &mpi_body_type);
-    MPI_Type_commit(&mpi_body_type);
     
     bodies = readBodies(f, &nrBodies);
     if (bodies == NULL) {
         fprintf(stderr, "Error reading .dat file\n");
         fclose(f);
-        MPI_Type_free(&mpi_body_type);
         MPI_Finalize();
         return 1;
     }
     
-    totalImpulse(bodies, nrBodies, &px, &py);
-    printf("Total impulse before simulation: px=%Lg, py=%Lg\n", px, py);
+    if (self == 0) {
+        totalImpulse(bodies, nrBodies, &px, &py);
+        printf("Total impulse before simulation: px=%Lg, py=%Lg\n", px, py);
+    }
 
     start = seconds();
     if (implementation == 0) {
@@ -444,24 +468,29 @@ int main(int argc, char *argv[]) {
     } else if (implementation == 3) {
         gravity_dist_opt(&bodies, nrBodies, steps, timeDelta);
     }
+    
     double time = seconds() - start;
     double rate = interactionRate(nrBodies, steps, time);
-    printf("Interaction rate of simulation: %f\n", rate);
+    
+    if (self == 0) {
+        printf("Interaction rate of simulation: %f\n", rate);
+    }
     
     f = NULL;
     f = fopen(output_file, "w");
     if (f == NULL) {
         fprintf(stderr, "Could not open or create file '%s'.\n", output_file);
         fclose(f);
-        MPI_Type_free(&mpi_body_type);
         MPI_Finalize();
         return 1;
     }
     
-    writeBodies(f, bodies, nrBodies);
+    if (self == 0) {
+        writeBodies(f, bodies, nrBodies);
+        totalImpulse(bodies, nrBodies, &px, &py);
+        printf("Total impulse after simulation: px=%Lg, py=%Lg\n", px, py);
+    }
 
-    totalImpulse(bodies, nrBodies, &px, &py);
-    printf("Total impulse after simulation: px=%Lg, py=%Lg\n", px, py);
 
     /*
      * Gelesene Koerper als PBM-Bild abspeichern.
@@ -472,7 +501,6 @@ int main(int argc, char *argv[]) {
     // params.width = params.height = 2.0e21;
     // saveImage(0, bodies, nrBodies, &params);
     fclose(f);
-    MPI_Type_free(&mpi_body_type);
     MPI_Finalize();
 
     return 0;
