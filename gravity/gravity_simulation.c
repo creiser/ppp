@@ -26,7 +26,8 @@ int np, self;
 typedef struct {
     long double mass;    /* Masse in kg */
     long double x, y;    /* x- und y-Position in m */
-    long double vx, vy;  /* x- und y-Geschwindigkeit in m/s */  
+    long double vx, vy;  /* x- und y-Geschwindigkeit in m/s */
+    long double ax, ay;  /* x- und y-Beschleunigung in m/s^2 */
 } body;
 
 /* liefert die Sekunden seit dem 01.01.1970 */
@@ -72,15 +73,18 @@ body* readBodies(FILE *f, int *n) {
 	return NULL;
 
     for (i=0; i<*n; i++) {
-	skipComments(f);
-	conv = fscanf(f, " %Lf %Lf %Lf %Lf %Lf",
-		      &(bodies[i].mass),
-		      &(bodies[i].x), &(bodies[i].y),
-		      &(bodies[i].vx), &(bodies[i].vy));
-	if (conv != 5) {
-	    free(bodies);
-	    return NULL;
-	}
+        skipComments(f);
+        conv = fscanf(f, " %Lf %Lf %Lf %Lf %Lf",
+                  &(bodies[i].mass),
+                  &(bodies[i].x), &(bodies[i].y),
+                  &(bodies[i].vx), &(bodies[i].vy));
+        if (conv != 5) {
+            free(bodies);
+            return NULL;
+        }
+        
+        bodies[i].ax = 0;
+        bodies[i].ay = 0;
     }
     return bodies;
 }
@@ -93,9 +97,9 @@ void writeBodies(FILE *f, const body *bodies, int n) {
     int i;
     fprintf(f, "%d\n", n);
     for (i=0; i<n; i++) {
-	fprintf(f, "% 10.4Lg % 10.4Lg % 10.4Lg % 10.4Lg % 10.4Lg\n",
-		bodies[i].mass, bodies[i].x, bodies[i].y,
-		bodies[i].vx, bodies[i].vy);
+        fprintf(f, "% 10.4Lg % 10.4Lg % 10.4Lg % 10.4Lg % 10.4Lg\n",
+            bodies[i].mass, bodies[i].x, bodies[i].y,
+            bodies[i].vx, bodies[i].vy);
     }
 }
 
@@ -185,29 +189,24 @@ void saveImage(int imgNum, const body *bodies, int nBodies,
  */
 void gravity_naive(body **bodies, const int n,
                    const int steps, const int tDelta) {
-    long double aTotalX;
-    long double aTotalY;
     long double vLength;
     body *T = (body *) malloc(sizeof(body) * n);
     
     for (int s = 0 ; s < steps; ++s) {
         for (int i = 0; i < n; ++i) {
-            aTotalX = 0;
-            aTotalY = 0;
-    
             for (int j = 0; j < n; ++j) {
                 if (i != j) {
                     vLength = hypot((*bodies)[j].x - (*bodies)[i].x,
                                     (*bodies)[j].y - (*bodies)[i].y);
                     
                     if (vLength != 0) {
-                        aTotalX += G * (*bodies)[j].mass
+                        T[i].ax += G * (*bodies)[j].mass
                                    * ((*bodies)[j].x - (*bodies)[i].x)
                                    / pow(vLength, 3);
                     }
                     
                     if (vLength != 0) {
-                        aTotalY += G * (*bodies)[j].mass
+                        T[i].ay += G * (*bodies)[j].mass
                                    * ((*bodies)[j].y - (*bodies)[i].y)
                                    / pow(vLength, 3);
                     }
@@ -215,19 +214,71 @@ void gravity_naive(body **bodies, const int n,
             }
             
             T[i].mass = (*bodies)[i].mass;
-            T[i].vx = (*bodies)[i].vx + aTotalX * tDelta;
-            T[i].vy = (*bodies)[i].vy + aTotalY * tDelta;
+            T[i].vx = (*bodies)[i].vx + T[i].ax * tDelta;
+            T[i].vy = (*bodies)[i].vy + T[i].ay * tDelta;
             T[i].x = (*bodies)[i].x + (*bodies)[i].vx * tDelta
-                        + 0.5 * aTotalX * tDelta * tDelta;
+                        + 0.5 * T[i].ax * tDelta * tDelta;
             T[i].y = (*bodies)[i].y + (*bodies)[i].vy * tDelta
-                        + 0.5 * aTotalY * tDelta * tDelta;
+                        + 0.5 * T[i].ay * tDelta * tDelta;
+            T[i].ax = 0;
+            T[i].ay = 0;
         }
         
         body *temp = T;
 		T = *bodies;
 		*bodies = temp;
     }
+}
+
+/*
+ * Implementation of a optimized sequential gravity simulation using Newtons 
+ * third law. (c)
+ * a_j_i = - a_i_j * (m_i / m_j)
+ */
+void gravity_opt(body **bodies, const int n,
+                   const int steps, const int tDelta) {
+    long double vLength;
+    body *T = (body *) malloc(sizeof(body) * n);
+    
+    for (int s = 0 ; s < steps; ++s) {
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n; ++j) {
+                if (i < j) {
+                    vLength = hypot((*bodies)[j].x - (*bodies)[i].x,
+                                    (*bodies)[j].y - (*bodies)[i].y);
+                    
+                    if (vLength != 0) {
+                        T[i].ax += G * (*bodies)[j].mass
+                                   * ((*bodies)[j].x - (*bodies)[i].x)
+                                   / pow(vLength, 3);
+                    }
+                    
+                    if (vLength != 0) {
+                        T[i].ay += G * (*bodies)[j].mass
+                                   * ((*bodies)[j].y - (*bodies)[i].y)
+                                   / pow(vLength, 3);
+                    }
+                    
+                    T[j].ax -= T[i].ax * ((*bodies)[i].mass/(*bodies)[j].mass);
+                    T[j].ay -= T[i].ay * ((*bodies)[i].mass/(*bodies)[j].mass);
+                }
+            }
+            
+            T[i].mass = (*bodies)[i].mass;
+            T[i].vx = (*bodies)[i].vx + T[i].ax * tDelta;
+            T[i].vy = (*bodies)[i].vy + T[i].ay * tDelta;
+            T[i].x = (*bodies)[i].x + (*bodies)[i].vx * tDelta
+                        + 0.5 * T[i].ax * tDelta * tDelta;
+            T[i].y = (*bodies)[i].y + (*bodies)[i].vy * tDelta
+                        + 0.5 * T[i].ay * tDelta * tDelta;
+            T[i].ax = 0;
+            T[i].ay = 0;
+        }
         
+        body *temp = T;
+		T = *bodies;
+		*bodies = temp;
+    }
 }
 
 void usage() {
@@ -309,6 +360,8 @@ int main(int argc, char *argv[]) {
     start = seconds();
     if (implementation == 0) {
         gravity_naive(&bodies, nrBodies, steps, timeDelta);
+    } else if (implementation == 1) {
+        gravity_opt(&bodies, nrBodies, steps, timeDelta);
     }
     double time = seconds() - start;
     double rate = interactionRate(nrBodies, steps, time);
