@@ -1,6 +1,7 @@
 #include <getopt.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stddef.h>
 #include <string.h>
 #include <math.h>
 #include <sys/time.h>
@@ -281,6 +282,63 @@ void gravity_opt(body **bodies, const int n,
     }
 }
 
+/*
+ * Implementation of a optimized sequential gravity simulation. (b)
+ */
+void gravity_dist(body **bodies, const int n,
+                   const int steps, const int tDelta) {
+    long double vLength;
+    body *T = (body *) malloc(sizeof(body) * n);
+    
+    for (int s = 0 ; s < steps; ++s) {
+        /*Scatter parts*/
+        //MPI_Scatterv(const void *sendbuf, const int *sendcounts, const int *displs, mpi_body_type, void *recvbuf, int recvcount, mpi_body_type, 0, MPI_COMM_WORLD)
+        
+        for (int i = 0; i < n; ++i) {
+            for (int j = 0; j < n; ++j) {
+                if (i != j) {
+                    vLength = hypot((*bodies)[j].x - (*bodies)[i].x,
+                                    (*bodies)[j].y - (*bodies)[i].y);
+                    
+                    if (vLength != 0) {
+                        T[i].ax += G * (*bodies)[j].mass
+                                   * ((*bodies)[j].x - (*bodies)[i].x)
+                                   / pow(vLength, 3);
+                    }
+                    
+                    if (vLength != 0) {
+                        T[i].ay += G * (*bodies)[j].mass
+                                   * ((*bodies)[j].y - (*bodies)[i].y)
+                                   / pow(vLength, 3);
+                    }
+                }
+            }
+            
+            T[i].mass = (*bodies)[i].mass;
+            T[i].vx = (*bodies)[i].vx + T[i].ax * tDelta;
+            T[i].vy = (*bodies)[i].vy + T[i].ay * tDelta;
+            T[i].x = (*bodies)[i].x + (*bodies)[i].vx * tDelta
+                        + 0.5 * T[i].ax * tDelta * tDelta;
+            T[i].y = (*bodies)[i].y + (*bodies)[i].vy * tDelta
+                        + 0.5 * T[i].ay * tDelta * tDelta;
+            T[i].ax = 0;
+            T[i].ay = 0;
+        }
+        
+        /*Gather parts*/
+    } 
+}
+
+/*
+ * Implementation of a optimized distributed gravity simulation using Newtons 
+ * third law. (c)
+ * a_j_i = - a_i_j * (m_i / m_j)
+ */
+void gravity_dist_opt(body **bodies, const int n,
+                   const int steps, const int tDelta) {
+                       
+}
+
 void usage() {
 	fprintf(stderr,
 		"[-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file] name_of_input_file\n"
@@ -346,10 +404,29 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
+    /* create a type for struct body */
+    const int nr = 7;
+    int blocklengths[] = {1, 1, 1, 1, 1, 1, 1};
+    MPI_Datatype types[] = {MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE, MPI_LONG_DOUBLE};
+    MPI_Datatype mpi_body_type;
+    MPI_Aint offsets[nr];
+
+    offsets[0] = offsetof(body, mass);
+    offsets[1] = offsetof(body, x);
+    offsets[2] = offsetof(body, y);
+    offsets[3] = offsetof(body, vx);
+    offsets[4] = offsetof(body, vy);
+    offsets[5] = offsetof(body, ax);
+    offsets[6] = offsetof(body, ay);
+
+    MPI_Type_create_struct(nr, blocklengths, offsets, types, &mpi_body_type);
+    MPI_Type_commit(&mpi_body_type);
+    
     bodies = readBodies(f, &nrBodies);
     if (bodies == NULL) {
         fprintf(stderr, "Error reading .dat file\n");
         fclose(f);
+        MPI_Type_free(&mpi_body_type);
         MPI_Finalize();
         return 1;
     }
@@ -362,6 +439,10 @@ int main(int argc, char *argv[]) {
         gravity_naive(&bodies, nrBodies, steps, timeDelta);
     } else if (implementation == 1) {
         gravity_opt(&bodies, nrBodies, steps, timeDelta);
+    } else if (implementation == 2) {
+        gravity_dist(&bodies, nrBodies, steps, timeDelta);
+    } else if (implementation == 3) {
+        gravity_dist_opt(&bodies, nrBodies, steps, timeDelta);
     }
     double time = seconds() - start;
     double rate = interactionRate(nrBodies, steps, time);
@@ -372,6 +453,7 @@ int main(int argc, char *argv[]) {
     if (f == NULL) {
         fprintf(stderr, "Could not open or create file '%s'.\n", output_file);
         fclose(f);
+        MPI_Type_free(&mpi_body_type);
         MPI_Finalize();
         return 1;
     }
@@ -390,6 +472,7 @@ int main(int argc, char *argv[]) {
     // params.width = params.height = 2.0e21;
     // saveImage(0, bodies, nrBodies, &params);
     fclose(f);
+    MPI_Type_free(&mpi_body_type);
     MPI_Finalize();
 
     return 0;
