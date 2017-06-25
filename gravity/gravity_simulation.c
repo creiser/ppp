@@ -193,27 +193,29 @@ void saveImage(int imgNum, const body *bodies, int nBodies,
  * Implementation of a naive sequential gravity simulation. (a)
  */
 void gravity_naive(body **bodies, const int n,
-                   const int steps, const int tDelta) {
+                   const int steps, const long double tDelta) {
     long double vLength;
+    long double xDiff;
+    long double yDiff;
+    
     body *T = (body *) malloc(sizeof(body) * n);
+    memset(T, 0, sizeof(body) * n);
     
     for (int s = 0 ; s < steps; ++s) {
         for (int i = 0; i < n; ++i) {
             for (int j = 0; j < n; ++j) {
                 if (i != j) {
-                    vLength = hypot((*bodies)[j].x - (*bodies)[i].x,
-                                    (*bodies)[j].y - (*bodies)[i].y);
+                    xDiff = (*bodies)[j].x - (*bodies)[i].x;
+                    yDiff = (*bodies)[j].y - (*bodies)[i].y;
+                    vLength = hypotl(xDiff, yDiff);
+                    vLength = vLength * vLength * vLength;
                     
                     if (vLength != 0) {
-                        T[i].ax += G * (*bodies)[j].mass
-                                   * ((*bodies)[j].x - (*bodies)[i].x)
-                                   / pow(vLength, 3);
+                        T[i].ax += G * (*bodies)[j].mass * xDiff / vLength;
                     }
                     
                     if (vLength != 0) {
-                        T[i].ay += G * (*bodies)[j].mass
-                                   * ((*bodies)[j].y - (*bodies)[i].y)
-                                   / pow(vLength, 3);
+                        T[i].ay += G * (*bodies)[j].mass * yDiff / vLength;
                     }
                 }
             }
@@ -245,32 +247,32 @@ void gravity_naive(body **bodies, const int n,
  * a_j_i = - a_i_j * (m_i / m_j)
  */
 void gravity_opt(body **bodies, const int n,
-                   const int steps, const int tDelta) {
+                   const int steps, const long double tDelta) {
     long double vLength;
+    long double xDiff;
+    long double yDiff;
+    
     body *T = (body *) malloc(sizeof(body) * n);
+    memset(T, 0, sizeof(body) * n);
     
     for (int s = 0 ; s < steps; ++s) {
         for (int i = 0; i < n; ++i) {
-            for (int j = 0; j < n; ++j) {
-                if (i < j) {
-                    vLength = hypot((*bodies)[j].x - (*bodies)[i].x,
-                                    (*bodies)[j].y - (*bodies)[i].y);
-                    
-                    if (vLength != 0) {
-                        T[i].ax += G * (*bodies)[j].mass
-                                   * ((*bodies)[j].x - (*bodies)[i].x)
-                                   / pow(vLength, 3);
-                    }
-                    
-                    if (vLength != 0) {
-                        T[i].ay += G * (*bodies)[j].mass
-                                   * ((*bodies)[j].y - (*bodies)[i].y)
-                                   / pow(vLength, 3);
-                    }
-                    
-                    T[j].ax -= T[i].ax * ((*bodies)[i].mass/(*bodies)[j].mass);
-                    T[j].ay -= T[i].ay * ((*bodies)[i].mass/(*bodies)[j].mass);
+            for (int j = i+1; j < n; ++j) {
+                xDiff = (*bodies)[j].x - (*bodies)[i].x;
+                yDiff = (*bodies)[j].y - (*bodies)[i].y;
+                vLength = hypotl(xDiff, yDiff);
+                vLength = vLength * vLength * vLength;
+                
+                if (vLength != 0) {
+                    T[i].ax += G * (*bodies)[j].mass * xDiff / vLength;
                 }
+                
+                if (vLength != 0) {
+                    T[i].ay += G * (*bodies)[j].mass * yDiff / vLength;
+                }
+                
+                T[j].ax -= T[i].ax * (*bodies)[i].mass / (*bodies)[j].mass;
+                T[j].ay -= T[i].ay * (*bodies)[i].mass / (*bodies)[j].mass;
             }
             
             T[i].mass = (*bodies)[i].mass;
@@ -284,13 +286,13 @@ void gravity_opt(body **bodies, const int n,
             T[i].ay = 0;
         }
         
+        if (save_image && image_step != -1 && s%image_step == 0) {
+            saveImage(s/image_step, T, n, &params);
+        }
         body *temp = T;
 		T = *bodies;
 		*bodies = temp;
         
-        if (save_image && image_step != -1 && s%image_step == 0) {
-            saveImage(s/image_step, *bodies, n, &params);
-        }
     }
 }
 
@@ -298,7 +300,7 @@ void gravity_opt(body **bodies, const int n,
  * Implementation of a naive distributed gravity simulation. (b)
  */
 void gravity_dist(body **bodies, const int n,
-                   const int steps, const int tDelta) {
+                   const int steps, const long double tDelta) {
     /* create a type for struct body */
     const int nr = 7;
     int blocklengths[] = {1, 1, 1, 1, 1, 1, 1};
@@ -318,6 +320,8 @@ void gravity_dist(body **bodies, const int n,
     MPI_Type_commit(&mpi_body_type);
     
     long double vLength;
+    long double xDiff;
+    long double yDiff;
     int *counts = (int *) malloc(sizeof(int) * np);
     int *displs = (int *) malloc(sizeof(int) * np);
     
@@ -332,7 +336,7 @@ void gravity_dist(body **bodies, const int n,
     
     for (int s = 0 ; s < steps; ++s) {
         
-#pragma omp parallel for private(vLength)
+#pragma omp parallel for private(vLength, xDiff, yDiff)
         for (int i = 0; i < counts[self]; ++i) {
             int bI = i + displs[self];
             long double ax = 0;
@@ -340,19 +344,17 @@ void gravity_dist(body **bodies, const int n,
             
             for (int j = 0; j < n; ++j) {
                 if (bI != j) {
-                    vLength = hypot((*bodies)[j].x - (*bodies)[bI].x,
-                                    (*bodies)[j].y - (*bodies)[bI].y);
+                    xDiff = (*bodies)[j].x - (*bodies)[bI].x;
+                    yDiff = (*bodies)[j].y - (*bodies)[bI].y;
+                    vLength = hypotl(xDiff, yDiff);
+                    vLength *= vLength * vLength;
                     
                     if (vLength != 0) {
-                        ax += G * (*bodies)[j].mass
-                                   * ((*bodies)[j].x - (*bodies)[bI].x)
-                                   / pow(vLength, 3);
+                        ax += G * (*bodies)[j].mass * xDiff / vLength;
                     }
                     
                     if (vLength != 0) {
-                        ay += G * (*bodies)[j].mass
-                                   * ((*bodies)[j].y - (*bodies)[bI].y)
-                                   / pow(vLength, 3);
+                        ay += G * (*bodies)[j].mass * yDiff / vLength;
                     }
                 }
             }
@@ -392,8 +394,8 @@ void gravity_dist(body **bodies, const int n,
  * a_j_i = - a_i_j * (m_i / m_j)
  */
 void gravity_dist_opt(body **bodies, const int n,
-                   const int steps, const int tDelta) {
-                       
+                   const int steps, const long double tDelta) {
+    
 }
 
 void usage() {
@@ -428,7 +430,7 @@ int main(int argc, char *argv[]) {
     body *bodies;
     int option, nrBodies;
     int steps = 366;
-    int timeDelta = 86400;
+    long double timeDelta = 86400;
     int implementation = GRAVITY_OPTIMIZED_DISTRIBUTED;
     int pixel_width = 200;
     long double meter_width = 4e11;
@@ -451,7 +453,7 @@ int main(int argc, char *argv[]) {
                 steps = atoi(optarg);
                 break;
 			case 't':
-				timeDelta = atoi(optarg);
+				timeDelta = atof(optarg);
         		break;
             case 'I':
 				save_image = true;
