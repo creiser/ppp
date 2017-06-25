@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stddef.h>
+#include <stdbool.h>
 #include <string.h>
 #include <math.h>
 #include <sys/time.h>
@@ -17,6 +18,9 @@
 static const long double G = 6.674e-11;
 
 int np, self;
+bool save_image = false;
+int image_step = -1;
+struct ImgParams params;
 
 /*
  * Datentyp zur Beschreibung eines Koerpers.
@@ -145,7 +149,7 @@ struct ImgParams {
 
 /*
  * Einfache Routine zur Ausgabe der Koerper als Bild.
- * Legt ein PBM (portable bitmap) Bild mit einem weissen
+ * Legt ein PBM (portable bitmap) Bild mit einem schwarzen
  * Pixel fuer jeden Koerper an.
  *   imgNum:  Nummer des Bildes (geht in den Dateinamen ein)
  *   bodies:  Array der Koerper
@@ -172,7 +176,7 @@ void saveImage(int imgNum, const body *bodies, int nBodies,
     for (i=0; i<nBodies; i++) {
         x = params->imgWidth/2  + bodies[i].x*params->imgWidth/params->width;
         y = params->imgHeight/2 - bodies[i].y*params->imgHeight/params->height;
-
+        
         if (x >= 0 && x < params->imgWidth && y >= 0 && y < params->imgHeight) {
             img[y*params->imgWidth + x] = 1;            
         }
@@ -228,6 +232,10 @@ void gravity_naive(body **bodies, const int n,
         body *temp = T;
 		T = *bodies;
 		*bodies = temp;
+        
+        if (save_image && image_step != -1 && s%image_step == 0) {
+            saveImage(s/image_step, *bodies, n, &params);
+        }
     }
 }
 
@@ -279,6 +287,10 @@ void gravity_opt(body **bodies, const int n,
         body *temp = T;
 		T = *bodies;
 		*bodies = temp;
+        
+        if (save_image && image_step != -1 && s%image_step == 0) {
+            saveImage(s/image_step, *bodies, n, &params);
+        }
     }
 }
 
@@ -362,6 +374,10 @@ void gravity_dist(body **bodies, const int n,
         if (s != steps - 1) {
             MPI_Bcast(*bodies, n, mpi_body_type, 0, MPI_COMM_WORLD);
         }
+        
+        if (self == 0 && save_image && image_step != -1 && s%image_step == 0) {
+            saveImage(s/image_step, *bodies, n, &params);
+        }
     }
     
     free(counts);
@@ -390,6 +406,10 @@ void usage() {
         "Use \"-t\" to specify the duration of one simulation step.\n"
 		"Use \"-h\" to display this description.\n"
 		"Use \"-o\" to specify the file the simulation result should be saved to. The default setting is \"out.dat\".\n"
+        "With \"-I\" option an image of the end result of the simulation is saved in inpufilename0000.pbm.\n"
+        "Use \"-d\" to specify an amount of steps after which an image of the current simulation should be saved. Needs -I.\n"
+        "Use \"-w\" to specify width of image in meter. Height will be the same.\n"
+        "Use \"-p\" to specify width of image in pixel. Height will be the same.\n"
 		"The input file has to be given as the last argument.\n");
 }
 
@@ -410,11 +430,12 @@ int main(int argc, char *argv[]) {
     int steps = 366;
     int timeDelta = 86400;
     int implementation = GRAVITY_OPTIMIZED_DISTRIBUTED;
+    int pixel_width = 200;
+    long double meter_width = 4e11;
     double start;
     long double px, py;
-    struct ImgParams params;
     
-    while ((option = getopt(argc,argv,"ho:m:S:t:")) != -1) {
+    while ((option = getopt(argc,argv,"ho:m:S:t:Id:w:p:")) != -1) {
         switch(option) {
         	case 'h':
         		usage();
@@ -432,7 +453,19 @@ int main(int argc, char *argv[]) {
 			case 't':
 				timeDelta = atoi(optarg);
         		break;
-        	default:
+            case 'I':
+				save_image = true;
+        		break;
+            case 'd':
+				image_step = atoi(optarg);
+        		break;
+        	case 'w':
+				meter_width = atoi(optarg);
+        		break;
+            case 'p':
+				pixel_width = atoi(optarg);
+        		break;
+            default:
                 fprintf(stderr, "'%c' is not a defined parameter.", option);
         		break;
         }
@@ -458,6 +491,10 @@ int main(int argc, char *argv[]) {
         printf("Total impulse before simulation: px=%Lg, py=%Lg\n", px, py);
     }
 
+    params.imgFilePrefix = strtok(argv[argc - 1], ".");
+    params.imgWidth = params.imgHeight = pixel_width;
+    params.width = params.height = meter_width;        
+    
     start = seconds();
     if (implementation == 0) {
         gravity_naive(&bodies, nrBodies, steps, timeDelta);
@@ -491,15 +528,10 @@ int main(int argc, char *argv[]) {
         printf("Total impulse after simulation: px=%Lg, py=%Lg\n", px, py);
     }
 
-
-    /*
-     * Gelesene Koerper als PBM-Bild abspeichern.
-     * Parameter passen zu "twogalaxies.dat".
-     */
-    // params.imgFilePrefix = argv[2];
-    // params.imgWidth = params.imgHeight = 200;
-    // params.width = params.height = 2.0e21;
-    // saveImage(0, bodies, nrBodies, &params);
+    if (self == 0 && save_image) {
+        saveImage(0, bodies, nrBodies, &params);
+    }
+    
     fclose(f);
     MPI_Finalize();
 
