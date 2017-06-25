@@ -460,7 +460,7 @@ int main(int argc, char *argv[]) {
 				image_step = atoi(optarg);
         		break;
         	case 'w':
-				meter_width = atoi(optarg);
+				meter_width = atof(optarg);
         		break;
             case 'p':
 				pixel_width = atoi(optarg);
@@ -511,18 +511,16 @@ int main(int argc, char *argv[]) {
     
     if (self == 0) {
         printf("Interaction rate of simulation: %f\n", rate);
-    }
-    
-    f = NULL;
-    f = fopen(output_file, "w");
-    if (f == NULL) {
-        fprintf(stderr, "Could not open or create file '%s'.\n", output_file);
-        fclose(f);
-        MPI_Finalize();
-        return 1;
-    }
-    
-    if (self == 0) {
+        f = NULL;
+        f = fopen(output_file, "w");
+        
+        if (f == NULL) {
+            fprintf(stderr, "Could not open or create file '%s'.\n", output_file);
+            fclose(f);
+            MPI_Finalize();
+            return 1;
+        }
+        
         writeBodies(f, bodies, nrBodies);
         totalImpulse(bodies, nrBodies, &px, &py);
         printf("Total impulse after simulation: px=%Lg, py=%Lg\n", px, py);
