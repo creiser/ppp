@@ -251,12 +251,17 @@ void gravity_opt(body **bodies, const int n,
     long double vLength;
     long double xDiff;
     long double yDiff;
+    long double ax;
+    long double ay;
     
     body *T = (body *) malloc(sizeof(body) * n);
     memset(T, 0, sizeof(body) * n);
     
     for (int s = 0 ; s < steps; ++s) {
         for (int i = 0; i < n; ++i) {
+            ax = 0;
+            ay = 0;
+            
             for (int j = i+1; j < n; ++j) {
                 xDiff = (*bodies)[j].x - (*bodies)[i].x;
                 yDiff = (*bodies)[j].y - (*bodies)[i].y;
@@ -264,15 +269,18 @@ void gravity_opt(body **bodies, const int n,
                 vLength = vLength * vLength * vLength;
                 
                 if (vLength != 0) {
-                    T[i].ax += G * (*bodies)[j].mass * xDiff / vLength;
+                    ax = G * (*bodies)[j].mass * xDiff / vLength;
                 }
                 
                 if (vLength != 0) {
-                    T[i].ay += G * (*bodies)[j].mass * yDiff / vLength;
+                    ay = G * (*bodies)[j].mass * yDiff / vLength;
                 }
                 
-                T[j].ax -= T[i].ax * (*bodies)[i].mass / (*bodies)[j].mass;
-                T[j].ay -= T[i].ay * (*bodies)[i].mass / (*bodies)[j].mass;
+                T[j].ax -= ax * (*bodies)[i].mass / (*bodies)[j].mass;
+                T[j].ay -= ay * (*bodies)[i].mass / (*bodies)[j].mass;
+                
+                T[i].ax += ax;
+                T[i].ay += ay;
             }
             
             T[i].mass = (*bodies)[i].mass;
@@ -286,13 +294,13 @@ void gravity_opt(body **bodies, const int n,
             T[i].ay = 0;
         }
         
-        if (save_image && image_step != -1 && s%image_step == 0) {
-            saveImage(s/image_step, T, n, &params);
-        }
         body *temp = T;
 		T = *bodies;
 		*bodies = temp;
         
+        if (save_image && image_step != -1 && s%image_step == 0) {
+            saveImage(s/image_step, *bodies, n, &params);
+        }
     }
 }
 
@@ -395,12 +403,88 @@ void gravity_dist(body **bodies, const int n,
  */
 void gravity_dist_opt(body **bodies, const int n,
                    const int steps, const long double tDelta) {
+    long double vLength;
+    long double xDiff;
+    long double yDiff;
+    int *counts = (int *) malloc(sizeof(int) * np);
+    int *displs = (int *) malloc(sizeof(int) * np);
     
+    counts[0] = (n%np == 0) ? n/np : (n/np + 1);
+    displs[0] = 0;
+    for (int i = 1; i < np; ++i) {
+        counts[i] = (n%np <= i) ? n/np : (n/np + 1);
+        displs[i] = displs[i-1] + counts[i-1];
+    }
+    
+    body *T = (body *) malloc(sizeof(body) * n);
+    memset(T, 0, sizeof(body) * n);
+    long double *aGlobal = (long double *) malloc(sizeof(long double) * n * 2);
+    
+    for (int s = 0 ; s < steps; ++s) {
+        memset(aGlobal, 0, sizeof(long double) * n * 2);
+        
+#pragma omp parallel for private(vLength, xDiff, yDiff)
+        for (int i = 0; i < counts[self]; ++i) {
+            int bI = i + displs[self];
+            long double ax;
+            long double ay;
+            
+            for (int j = bI+1; j < n; ++j) {
+                xDiff = (*bodies)[j].x - (*bodies)[bI].x;
+                yDiff = (*bodies)[j].y - (*bodies)[bI].y;
+                vLength = hypotl(xDiff, yDiff);
+                vLength = vLength * vLength * vLength;
+                ax = 0;
+                ay = 0;
+                
+                if (vLength != 0) {
+                    ax = G * (*bodies)[j].mass * xDiff / vLength;
+                }
+                
+                if (vLength != 0) {
+                    ay = G * (*bodies)[j].mass * yDiff / vLength;
+                }
+                  
+                aGlobal[j*2] -= ax * (*bodies)[i].mass
+                                    / (*bodies)[j].mass;
+                aGlobal[j*2+1] -= ay * (*bodies)[i].mass
+                                    / (*bodies)[j].mass;
+                
+                aGlobal[bI*2] += ax;
+                aGlobal[bI*2+1] += ay;
+            }
+        }
+        
+        MPI_Allreduce(MPI_IN_PLACE, aGlobal, 2 * n, MPI_LONG_DOUBLE, MPI_SUM,
+                        MPI_COMM_WORLD);
+        
+        for (int i = 0; i < n; ++i) {
+            T[i].mass = (*bodies)[i].mass;
+            T[i].vx = (*bodies)[i].vx + aGlobal[i*2] * tDelta;
+            T[i].vy = (*bodies)[i].vy + aGlobal[i*2+1] * tDelta;
+            T[i].x = (*bodies)[i].x + (*bodies)[i].vx * tDelta
+                        + 0.5 * aGlobal[i*2] * tDelta * tDelta;
+            T[i].y = (*bodies)[i].y + (*bodies)[i].vy * tDelta
+                        + 0.5 * aGlobal[i*2+1] * tDelta * tDelta;
+        }
+        
+        body *temp = T;
+		T = *bodies;
+		*bodies = temp;
+        
+        if (self == 0 && save_image && image_step != -1 && s%image_step == 0) {
+            saveImage(s/image_step, *bodies, n, &params);
+        }
+    }
+    
+    free(aGlobal);
+    free(counts);
+    free(displs);
 }
 
 void usage() {
 	fprintf(stderr,
-		"[-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file] name_of_input_file\n"
+		"[-m implementation][-S number_of_steps][-t time_delta][-h][-o name_of_output_file][-I][-d image_step][-w image_size_in_meter][-p image_size_in_pixel] name_of_input_file\n"
 		"This program takes a .dat file with defined bodies and executes a gravity simulation on it based on the given options.\n"
 		"With the \"-m\" option the implementation can be specified with an integer.\n"
 		"Possible values are 0: naive, 1: optimized, 2: distributed and 3: distributed optimized\n"
@@ -508,10 +592,9 @@ int main(int argc, char *argv[]) {
         gravity_dist_opt(&bodies, nrBodies, steps, timeDelta);
     }
     
-    double time = seconds() - start;
-    double rate = interactionRate(nrBodies, steps, time);
-    
     if (self == 0) {
+        double time = seconds() - start;
+        double rate = interactionRate(nrBodies, steps, time);
         printf("Interaction rate of simulation: %f\n", rate);
         f = NULL;
         f = fopen(output_file, "w");
