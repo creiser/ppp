@@ -8,5 +8,15 @@ scalepgm/scalepgm
 vcd/pnmdiff
 vcd/pnmdiff.c
 vcd/vcd
-
-
+codec/CMakeFiles
+codec/cmake_install.cmake
+codec/CMakeCache.txt
+codec/Makefile
+codec/dct_flops
+codec/image_encoder
+codec/install_manifest.txt
+codec/libppp_image.a
+codec/libppp_pnm.a
+codec/libppp_video.a
+codec/viewer
+install/
