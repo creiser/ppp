@@ -182,6 +182,11 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     local uint8_t *result = result_[lb];
     local int8_t *sresult = (local int8_t *)result;
     size_t len;
+	
+	// TODO: It is probably better to just use the same space twice with size =
+	// 		max(size(result_), size(floatBuffer_))
+	local float floatBuffer_[4][64] __attribute__((aligned(16)));
+	local float *floatBuffer = floatBuffer_[lb];
 
     const bool compr  =  format == 2;  // Is compression (-c) requested?
 
@@ -190,14 +195,17 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     global uint8_t *current = image + 8*blockY*columns + 8*blockX;
 	
 	if (get_global_id(0) == 0 && get_global_id(1) == 0)
-		printf("v4\n");
+		printf("v9\n");
+	barrier(0);
+	
+	// TODO: We could use get_local_id() instead
+	const uint offsetX = self64 % 8;
+	const uint offsetY = self64 / 8;
 	
     switch(format) {
     case 0: {  // Exercise (a)
         // Reorder block directly to the output location
-		const uint offsetX = self64 % 8;
-		const uint offsetY = self64 / 8;
-		sresult[self64] = (int8_t)current[columns * offsetY + offsetX] - 128;
+		sresult[self64] = (int)current[columns * offsetY + offsetX] - 128;
 		
 		// (the next line is wrong and has to be changed)
         //sresult[self64] = (int)current[self64] - 128;
@@ -205,7 +213,26 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
         break;
     }
     case 1: {  // Exercise (b)
-        // ...
+        floatBuffer[self64] = (int)current[columns * offsetY + offsetX] - 128;
+		barrier(CLK_LOCAL_MEM_FENCE);
+		
+		// A * B
+		float tempResult = 0;
+		for (int8_t i = 0; i < 8; i++)
+			tempResult += dct_coeffs[offsetY * 8 + i] * floatBuffer[i * 8 + offsetX];
+		barrier(CLK_LOCAL_MEM_FENCE);
+		floatBuffer[self64] = tempResult;
+		barrier(CLK_LOCAL_MEM_FENCE);
+		
+		// B * A^tr
+		tempResult = 0;
+		for (int8_t i = 0; i < 8; i++)
+			tempResult += floatBuffer[offsetY * 8 + i] * dct_coeffs_tr[i * 8 + offsetX];
+		barrier(CLK_LOCAL_MEM_FENCE);
+		
+		// TODO: Try convert_char_rte
+		sresult[permut[self64]] = convert_int_rte(tempResult / quantization_factors[self64]);
+		len = 64;
         break;
     }
     case 2: {  // Exercise (c)

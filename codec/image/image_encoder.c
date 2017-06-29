@@ -378,6 +378,20 @@ int main(int argc, char *argv[]) {
                     devtype = ODT_CPU;
                 }
                 frame = encode_opencl(image, &info, devtype);
+				
+				// Compare to reference implementation
+				ppp_frame *ref_frame = encode(image, &info);
+				int numDifferent = 0;
+				for (int i = 0; i < ref_frame->length; i++)
+				{
+					if (ref_frame->data[i] != frame->data[i])
+					{
+						printf("Difference at %d: %d vs. %d\n", i, (int8_t)ref_frame->data[i], (int8_t)frame->data[i]);
+						numDifferent++;
+					}
+				}
+				printf("Number of different values: %d\n", numDifferent);
+				free(ref_frame);
             }
             if (frame != NULL) {
                 if (show_stats && format == PPP_IMGFMT_COMPRESSED_DCT) {
@@ -396,7 +410,6 @@ int main(int argc, char *argv[]) {
         free(image);
     } else
         fprintf(stderr, "could not load image\n");
-    
     return 0;
 }
 
