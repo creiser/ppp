@@ -188,12 +188,19 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     // 'current' points to the upper left corner of the macro block
     // assigned to this thread.
     global uint8_t *current = image + 8*blockY*columns + 8*blockX;
-
+	
+	if (get_global_id(0) == 0 && get_global_id(1) == 0)
+		printf("v4\n");
+	
     switch(format) {
     case 0: {  // Exercise (a)
         // Reorder block directly to the output location
-        // (the next line is wrong and has to be changed)
-        sresult[self64] = (int)current[self64] - 128;
+		const uint offsetX = self64 % 8;
+		const uint offsetY = self64 / 8;
+		sresult[self64] = (int8_t)current[columns * offsetY + offsetX] - 128;
+		
+		// (the next line is wrong and has to be changed)
+        //sresult[self64] = (int)current[self64] - 128;
         len = 64;
         break;
     }
