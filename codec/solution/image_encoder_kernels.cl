@@ -197,22 +197,26 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     // Each of the 4 macro blocks in a work group has its own
     // result array. Use 'sresult' to store signed values,
     // 'result' to store unsigned values.
-    local uint8_t result_[4][96] __attribute__((aligned(16)));
+    //local uint8_t result_[4][96] __attribute__((aligned(16)));
+	
+	local uint8_t result_[4][288] __attribute__((aligned(16))); // enough space for nibbles 192 bytes (at the back) and result (at the front) 96 bytes
     local uint8_t *result = result_[lb];
     local int8_t *sresult = (local int8_t *)result;
-    //size_t len;
-	
+	local float *floatBuffer = (local float *)result; // enough space for 64 floats = 256 bytes
+	local uint8_t *nibbles = &result[96]; // first 96 bytes are reserved for "packed" nibbles, while the remaining 192 bytes are for "unpacked" nibbles 
+
+	//size_t len;
 	local size_t lens[4] __attribute__((aligned(16)));
 	
 	// TODO: It is probably better to just use the same space twice with size =
 	// 		max(size(result_), size(floatBuffer_))
-	local float floatBuffer_[4][64] __attribute__((aligned(16)));
-	local float *floatBuffer = floatBuffer_[lb];
+	//local float floatBuffer_[4][64] __attribute__((aligned(16)));
+	//local float *floatBuffer = floatBuffer_[lb];
 	
 	// TODO: another buffer for the nibbles, maybe we can be more efficient here
 	// 64 items/macroblock * 3 nibbles/items = 192 nibbles/macroblock
-	local uint8_t nibbles_[4][192] __attribute__((aligned(16)));
-	local uint8_t *nibbles = nibbles_[lb];
+	//local uint8_t nibbles_[4][192] __attribute__((aligned(16)));
+	//local uint8_t *nibbles = nibbles_[lb];
 
     const bool compr  =  format == 2;  // Is compression (-c) requested?
 
@@ -221,7 +225,7 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     global uint8_t *current = image + 8*blockY*columns + 8*blockX;
 	
 	if (get_global_id(0) == 0 && get_global_id(1) == 0)
-		printf("v12\n");
+		printf("v13\n");
 	barrier(0);
 	
 	// TODO: We could use get_local_id() instead
