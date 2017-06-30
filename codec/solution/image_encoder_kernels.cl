@@ -144,6 +144,25 @@ void get_result_offset(int len, uint block_nr, bool compr,
     barrier(CLK_LOCAL_MEM_FENCE);
 }
 
+uint8_t first_nibble(int8_t val) {
+    if (val == 1)
+        return 0x8;
+    else if (val == 2)
+        return 0x9;
+    else if (val == -1)
+        return 0xA;
+    else if (val == -2)
+        return 0xB;
+    else if (val >= 19)
+        return 0xE;
+    else if (val <= -19)
+        return 0xF;
+    else if (val <= -3)
+        return 0xD;
+    else
+        return 0xC;
+}
+
 /*
  * Encode 4 macro blocks with 8x8 pixels in each work group.
  * Each thread computes its macro block's x and y coordinate
@@ -181,12 +200,19 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     local uint8_t result_[4][96] __attribute__((aligned(16)));
     local uint8_t *result = result_[lb];
     local int8_t *sresult = (local int8_t *)result;
-    size_t len;
+    //size_t len;
+	
+	local size_t lens[4] __attribute__((aligned(16)));
 	
 	// TODO: It is probably better to just use the same space twice with size =
 	// 		max(size(result_), size(floatBuffer_))
 	local float floatBuffer_[4][64] __attribute__((aligned(16)));
 	local float *floatBuffer = floatBuffer_[lb];
+	
+	// TODO: another buffer for the nibbles, maybe we can be more efficient here
+	// 64 items/macroblock * 3 nibbles/items = 192 nibbles/macroblock
+	local uint8_t nibbles_[4][192] __attribute__((aligned(16)));
+	local uint8_t *nibbles = nibbles_[lb];
 
     const bool compr  =  format == 2;  // Is compression (-c) requested?
 
@@ -195,7 +221,7 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     global uint8_t *current = image + 8*blockY*columns + 8*blockX;
 	
 	if (get_global_id(0) == 0 && get_global_id(1) == 0)
-		printf("v9\n");
+		printf("v12\n");
 	barrier(0);
 	
 	// TODO: We could use get_local_id() instead
@@ -209,7 +235,8 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 		
 		// (the next line is wrong and has to be changed)
         //sresult[self64] = (int)current[self64] - 128;
-        len = 64;
+        lens[lb] = 64;
+		//len = 64;
         break;
     }
     case 1: {  // Exercise (b)
@@ -230,19 +257,98 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 			tempResult += floatBuffer[offsetY * 8 + i] * dct_coeffs_tr[i * 8 + offsetX];
 		barrier(CLK_LOCAL_MEM_FENCE);
 		
-		// TODO: Try convert_char_rte
-		sresult[permut[self64]] = convert_int_rte(tempResult / quantization_factors[self64]);
-		len = 64;
+		sresult[permut[self64]] = convert_char_rte(tempResult / quantization_factors[self64]);
+		//len = 64;
+		lens[lb] = 64;
         break;
     }
     case 2: {  // Exercise (c)
-        // ...
+		floatBuffer[self64] = (int)current[columns * offsetY + offsetX] - 128;
+		barrier(CLK_LOCAL_MEM_FENCE);
+		
+		// A * B
+		float tempResult = 0;
+		for (int8_t i = 0; i < 8; i++)
+			tempResult += dct_coeffs[offsetY * 8 + i] * floatBuffer[i * 8 + offsetX];
+		barrier(CLK_LOCAL_MEM_FENCE);
+		floatBuffer[self64] = tempResult;
+		barrier(CLK_LOCAL_MEM_FENCE);
+		
+		// B * A^tr
+		tempResult = 0;
+		for (int8_t i = 0; i < 8; i++)
+			tempResult += floatBuffer[offsetY * 8 + i] * dct_coeffs_tr[i * 8 + offsetX];
+		barrier(CLK_LOCAL_MEM_FENCE);
+		
+		sresult[permut[self64]] = convert_char_rte(tempResult / quantization_factors[self64]);
+		barrier(CLK_LOCAL_MEM_FENCE);
+	
+        if (self64 == 0) {
+			/* Walk through the values. */
+			int zeros = 0, pos = 0;
+			for (int i=0; i<64; i++) {
+				int8_t val = sresult[i];
+				if (val == 0)
+					zeros++;
+				else {
+					/* When we meet a non-zero value, we output an appropriate
+					 * number of codes for the zeros preceding the current
+					 * non-zero value.
+					 */
+					uint8_t absval = val < 0 ? -val : val;
+					while (zeros > 0) {
+						int z = zeros > 7 ? 7 : zeros;
+						nibbles[pos++] = z;
+						zeros -= z;
+					}
+					nibbles[pos++] = first_nibble(val);
+					if (absval >= 19) {
+						uint8_t code = absval - 19;
+						nibbles[pos++] = code >> 4;
+						nibbles[pos++] = code & 0xF;
+					} else if (absval >= 3) {
+						nibbles[pos++] = absval - 3;
+					}
+				}
+			}
+
+			/* When the sequence ends with zeros, terminate the
+			 * sequence with 0x0.
+			 */
+			if (zeros > 0)
+				nibbles[pos++] = 0;
+			
+			/* Add a nibble 0x0 if the number of nibbles in the code
+			 * is odd.
+			 */
+			if ((pos & 1) != 0)
+				nibbles[pos++] = 0;
+			
+			/* Return the number of bytes used. */
+			lens[lb] = pos/2;
+			
+			/*for (int i=0; i<pos/2; i++)
+				result[i] = (nibbles[2*i] << 4) | nibbles[2*i+1];*/
+			
+			//len = pos/2;
+			/*if (block_nr == 222)
+				printf("here: %d: %lu\n", self64, lens[lb]);*/
+		}
+		/*
+		 * Pack the nibbles into bytes. The first nibble of each
+		 * pair of nibbles goes into the upper half of the byte.
+		 */
+		barrier(CLK_LOCAL_MEM_FENCE);
+		for (int i=self64; i<lens[lb]; i+=64)
+			result[i] = (nibbles[2*i] << 4) | nibbles[2*i+1];
         break;
     }
     default:
-        len = 0;
+		//len = 0;
+        lens[lb] = 0;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
+	
 
     // Compute at which offset to put our data.
     // When compression is not enabled, the position of the output
@@ -259,9 +365,9 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     // the increment by len is stored in off[lb], so we can
     // put our data at frame[off[lb]..off[lb]+len-1].
     local size_t off[4];
-    get_result_offset(len, block_nr, compr,
+    get_result_offset(lens[lb], block_nr, compr,
                       size, offsets_and_sizes, &off[lb]);
-    for (int i=self64; i<len; i+=64)
+    for (int i=self64; i<lens[lb]; i+=64)
         frame[off[lb]+i] = result[i];
     barrier(CLK_GLOBAL_MEM_FENCE);
 }

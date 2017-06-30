@@ -386,7 +386,7 @@ int main(int argc, char *argv[]) {
 				{
 					if (ref_frame->data[i] != frame->data[i])
 					{
-						printf("Difference at %d: %d vs. %d\n", i, (int8_t)ref_frame->data[i], (int8_t)frame->data[i]);
+						//printf("Difference at (%d, %d): %d vs. %d\n", i % columns, i / columns, (int8_t)ref_frame->data[i], (int8_t)frame->data[i]);
 						numDifferent++;
 					}
 				}
