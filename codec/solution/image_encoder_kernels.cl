@@ -163,6 +163,32 @@ uint8_t first_nibble(int8_t val) {
         return 0xC;
 }
 
+int8_t get_block(global uint8_t *current, int columns, const uint offsetX, const uint offsetY)
+{
+	return (int)current[columns * offsetY + offsetX] - 128;
+}
+
+void dct(local float* floatBuffer, local int8_t* sresult, const uint self64, const uint offsetX, const uint offsetY)
+{
+	barrier(CLK_LOCAL_MEM_FENCE);
+	// A * B (A := dct_coeffs, B := floatBuffer, A^tr := dct_coeffs_tr)
+	float matrixProduct = 0;
+	for (int8_t i = 0; i < 8; i++)
+		matrixProduct += dct_coeffs[offsetY * 8 + i] * floatBuffer[i * 8 + offsetX];
+	barrier(CLK_LOCAL_MEM_FENCE);
+	floatBuffer[self64] = matrixProduct;
+	barrier(CLK_LOCAL_MEM_FENCE);
+	
+	// B * A^tr
+	matrixProduct = 0;
+	for (int8_t i = 0; i < 8; i++)
+		matrixProduct += floatBuffer[offsetY * 8 + i] * dct_coeffs_tr[i * 8 + offsetX];
+	barrier(CLK_LOCAL_MEM_FENCE);
+	
+	// Quantization amd zig zag permutation
+	sresult[permut[self64]] = convert_char_rte(matrixProduct / quantization_factors[self64]);
+}
+
 /*
  * Encode 4 macro blocks with 8x8 pixels in each work group.
  * Each thread computes its macro block's x and y coordinate
@@ -192,32 +218,26 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     // macro blocks in a work group this thread is in
     // (0 = upper left, 1 = upper right, 2 = lower left, 3 = lower right).
     const uint lb = get_local_id(0)/8 + 2*(get_local_id(1)/8);
-
-    // For each macro block, the result is stored in 'result'.
-    // Each of the 4 macro blocks in a work group has its own
-    // result array. Use 'sresult' to store signed values,
-    // 'result' to store unsigned values.
-    //local uint8_t result_[4][96] __attribute__((aligned(16)));
 	
-	local uint8_t result_[4][288] __attribute__((aligned(16))); // enough space for nibbles 192 bytes (at the back) and result (at the front) 96 bytes
+	// For each macro block a multipurpose array with size 288 bytes 
+	// is allocated. We need enough space for the nibbles when they
+	// are not packed yet (i.e. one nibble per byte), which sums
+	// to 2*96=192 bytes. At the same time we will need space for the
+	// packed result, which equals to 96 bytes. So in total 96+192=288
+	// bytes are needed. We use the same space to save intermediate
+	// floating point results. Since each float needs 4 byte of memory,
+	// we need 64*4=256 bytes for a macro block. We do not need this
+	// memory at the same as the other results and therefore the
+	// array suffices, since 256 < 288.
+	local uint8_t result_[4][288] __attribute__((aligned(16))); // result (96 bytes) + nibbles (192 bytes) = 288 bytes
     local uint8_t *result = result_[lb];
     local int8_t *sresult = (local int8_t *)result;
-	local float *floatBuffer = (local float *)result; // enough space for 64 floats = 256 bytes
+	local float *floatBuffer = (local float *)result; // 64 floats * 4 byte/float = 256 bytes < 288 bytes
 	local uint8_t *nibbles = &result[96]; // first 96 bytes are reserved for "packed" nibbles, while the remaining 192 bytes are for "unpacked" nibbles 
 
-	//size_t len;
+	// Save one length per macroblock, instead of using a private variable.
 	local size_t lens[4] __attribute__((aligned(16)));
 	
-	// TODO: It is probably better to just use the same space twice with size =
-	// 		max(size(result_), size(floatBuffer_))
-	//local float floatBuffer_[4][64] __attribute__((aligned(16)));
-	//local float *floatBuffer = floatBuffer_[lb];
-	
-	// TODO: another buffer for the nibbles, maybe we can be more efficient here
-	// 64 items/macroblock * 3 nibbles/items = 192 nibbles/macroblock
-	//local uint8_t nibbles_[4][192] __attribute__((aligned(16)));
-	//local uint8_t *nibbles = nibbles_[lb];
-
     const bool compr  =  format == 2;  // Is compression (-c) requested?
 
     // 'current' points to the upper left corner of the macro block
@@ -228,63 +248,25 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 		printf("v13\n");
 	barrier(0);
 	
-	// TODO: We could use get_local_id() instead
 	const uint offsetX = self64 % 8;
 	const uint offsetY = self64 / 8;
 	
     switch(format) {
     case 0: {  // Exercise (a)
         // Reorder block directly to the output location
-		sresult[self64] = (int)current[columns * offsetY + offsetX] - 128;
-		
-		// (the next line is wrong and has to be changed)
-        //sresult[self64] = (int)current[self64] - 128;
+		sresult[self64] = get_block(current, columns, offsetX, offsetY);
         lens[lb] = 64;
-		//len = 64;
         break;
     }
     case 1: {  // Exercise (b)
-        floatBuffer[self64] = (int)current[columns * offsetY + offsetX] - 128;
-		barrier(CLK_LOCAL_MEM_FENCE);
-		
-		// A * B
-		float tempResult = 0;
-		for (int8_t i = 0; i < 8; i++)
-			tempResult += dct_coeffs[offsetY * 8 + i] * floatBuffer[i * 8 + offsetX];
-		barrier(CLK_LOCAL_MEM_FENCE);
-		floatBuffer[self64] = tempResult;
-		barrier(CLK_LOCAL_MEM_FENCE);
-		
-		// B * A^tr
-		tempResult = 0;
-		for (int8_t i = 0; i < 8; i++)
-			tempResult += floatBuffer[offsetY * 8 + i] * dct_coeffs_tr[i * 8 + offsetX];
-		barrier(CLK_LOCAL_MEM_FENCE);
-		
-		sresult[permut[self64]] = convert_char_rte(tempResult / quantization_factors[self64]);
-		//len = 64;
+		floatBuffer[self64] = get_block(current, columns, offsetX, offsetY);
+        dct(floatBuffer, sresult, self64, offsetX, offsetY);
 		lens[lb] = 64;
         break;
     }
     case 2: {  // Exercise (c)
-		floatBuffer[self64] = (int)current[columns * offsetY + offsetX] - 128;
-		barrier(CLK_LOCAL_MEM_FENCE);
-		
-		// A * B
-		float tempResult = 0;
-		for (int8_t i = 0; i < 8; i++)
-			tempResult += dct_coeffs[offsetY * 8 + i] * floatBuffer[i * 8 + offsetX];
-		barrier(CLK_LOCAL_MEM_FENCE);
-		floatBuffer[self64] = tempResult;
-		barrier(CLK_LOCAL_MEM_FENCE);
-		
-		// B * A^tr
-		tempResult = 0;
-		for (int8_t i = 0; i < 8; i++)
-			tempResult += floatBuffer[offsetY * 8 + i] * dct_coeffs_tr[i * 8 + offsetX];
-		barrier(CLK_LOCAL_MEM_FENCE);
-		
-		sresult[permut[self64]] = convert_char_rte(tempResult / quantization_factors[self64]);
+		floatBuffer[self64] = get_block(current, columns, offsetX, offsetY);
+        dct(floatBuffer, sresult, self64, offsetX, offsetY);
 		barrier(CLK_LOCAL_MEM_FENCE);
 	
         if (self64 == 0) {
@@ -328,19 +310,14 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 			if ((pos & 1) != 0)
 				nibbles[pos++] = 0;
 			
-			/* Return the number of bytes used. */
+			/* Save the number of bytes used. */
 			lens[lb] = pos/2;
-			
-			/*for (int i=0; i<pos/2; i++)
-				result[i] = (nibbles[2*i] << 4) | nibbles[2*i+1];*/
-			
-			//len = pos/2;
-			/*if (block_nr == 222)
-				printf("here: %d: %lu\n", self64, lens[lb]);*/
 		}
 		/*
 		 * Pack the nibbles into bytes. The first nibble of each
 		 * pair of nibbles goes into the upper half of the byte.
+		 * We copy from the back part (unpacked nibbles) to the
+		 * the front part (packed nibbles).
 		 */
 		barrier(CLK_LOCAL_MEM_FENCE);
 		for (int i=self64; i<lens[lb]; i+=64)
@@ -348,12 +325,10 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
         break;
     }
     default:
-		//len = 0;
         lens[lb] = 0;
     }
     barrier(CLK_LOCAL_MEM_FENCE);
 	
-
     // Compute at which offset to put our data.
     // When compression is not enabled, the position of the output
     // data is simply 64*block_nr. When compression is enabled,
