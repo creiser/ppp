@@ -144,6 +144,25 @@ void get_result_offset(int len, uint block_nr, bool compr,
     barrier(CLK_LOCAL_MEM_FENCE);
 }
 
+uint8_t first_nibble(int8_t val) {
+    if (val == 1)
+        return 0x8;
+    else if (val == 2)
+        return 0x9;
+    else if (val == -1)
+        return 0xA;
+    else if (val == -2)
+        return 0xB;
+    else if (val >= 19)
+        return 0xE;
+    else if (val <= -19)
+        return 0xF;
+    else if (val <= -3)
+        return 0xD;
+    else
+        return 0xC;
+}
+
 /*
  * Encode 4 macro blocks with 8x8 pixels in each work group.
  * Each thread computes its macro block's x and y coordinate
@@ -188,21 +207,126 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     // 'current' points to the upper left corner of the macro block
     // assigned to this thread.
     global uint8_t *current = image + 8*blockY*columns + 8*blockX;
+    const uint XOffset = self64 % 8;
+    const uint YOffset = self64 / 8;
 
     switch(format) {
     case 0: {  // Exercise (a)
         // Reorder block directly to the output location
-        // (the next line is wrong and has to be changed)
-        sresult[self64] = (int)current[self64] - 128;
+        sresult[self64] = (int)current[YOffset*columns + XOffset] - 128;
         len = 64;
         break;
     }
     case 1: {  // Exercise (b)
-        // ...
+        local float buffer_[4][96] __attribute__((aligned(16)));
+        local float *buffer = buffer_[lb];
+        
+        buffer[self64] = (int)current[YOffset*columns + XOffset] - 128;
+        barrier(CLK_LOCAL_MEM_FENCE);
+        
+        // A*B
+        float temp = 0;
+        for (int8_t i = 0; i < 8; i++) {
+            temp += dct_coeffs[YOffset * 8 + i] * buffer[8 * i + XOffset];
+        }
+        
+        barrier(CLK_LOCAL_MEM_FENCE);
+        buffer[self64] = temp;
+        barrier(CLK_LOCAL_MEM_FENCE);
+        
+        // B*A^tr
+        temp = 0;
+        for (int8_t i = 0; i < 8; i++) {
+            temp += buffer[YOffset * 8 + i] * dct_coeffs_tr[8 * i + XOffset];
+        }
+        
+        barrier(CLK_LOCAL_MEM_FENCE);
+        
+        //Factorize and permutate
+        sresult[permut[self64]] = lrintf(temp / quantization_factors[self64]);
+        len = 64;
         break;
     }
     case 2: {  // Exercise (c)
-        // ...
+        local float buffer_[4][96] __attribute__((aligned(16)));
+        local float *buffer = buffer_[lb];
+        local uint8_t nibbles_[4][192] __attribute__((aligned(16)));
+        local uint8_t *nibbles = nibbles_[lb];
+        
+        buffer[self64] = (int)current[YOffset*columns + XOffset] - 128;
+        barrier(CLK_LOCAL_MEM_FENCE);
+        
+        // A*B
+        float temp = 0;
+        for (int8_t i = 0; i < 8; i++) {
+            temp += dct_coeffs[YOffset * 8 + i] * buffer[8 * i + XOffset];
+        }
+        
+        barrier(CLK_LOCAL_MEM_FENCE);
+        buffer[self64] = temp;
+        barrier(CLK_LOCAL_MEM_FENCE);
+        
+        // B*A^tr
+        temp = 0;
+        for (int8_t i = 0; i < 8; i++) {
+            temp += buffer[YOffset * 8 + i] * dct_coeffs_tr[8 * i + XOffset];
+        }
+        
+        barrier(CLK_LOCAL_MEM_FENCE);
+        sresult[permut[self64]] = lrintf(temp / quantization_factors[self64]);
+        barrier(CLK_LOCAL_MEM_FENCE);
+        
+        if (self64 == 0) {
+            int zeros = 0, pos = 0;
+            for (int i = 0; i < 64; i++) {
+                int8_t val = sresult[i];
+                if (val == 0) {
+                    zeros++;
+                } else {
+                    /* When we meet a non-zero value, we output an appropriate
+                     * number of codes for the zeros preceding the current
+                     * non-zero value.
+                     */
+                    uint8_t absval = val < 0 ? -val : val;
+                    
+                    while (zeros > 0) {
+                        int z = zeros > 7 ? 7 : zeros;
+                        nibbles[pos++] = z;
+                        zeros -= z;
+                    }
+                    
+                    nibbles[pos++] = first_nibble(val);
+                    if (absval >= 19) {
+                        uint8_t code = absval - 19;
+                        nibbles[pos++] = code >> 4;
+                        nibbles[pos++] = code & 0xF;
+                    } else if (absval >= 3) {
+                        nibbles[pos++] = absval - 3;
+                    }
+                }
+            }
+
+            /* When the sequence ends with zeros, terminate the
+             * sequence with 0x0.
+             */
+            if (zeros > 0)
+                nibbles[pos++] = 0;
+            
+            /* Add a nibble 0x0 if the number of nibbles in the code
+             * is odd.
+             */
+            if ((pos & 1) != 0)
+                nibbles[pos++] = 0;
+            
+            len = pos/2;
+        }
+        
+        /*
+         * Pack the nibbles into bytes. The first nibble of each
+         * pair of nibbles goes into the upper half of the byte.
+         */
+        barrier(CLK_LOCAL_MEM_FENCE);
+        result[self64] = (nibbles[2*i] << 4) | nibbles[2*i+1];
         break;
     }
     default:
