@@ -219,34 +219,18 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     // (0 = upper left, 1 = upper right, 2 = lower left, 3 = lower right).
     const uint lb = get_local_id(0)/8 + 2*(get_local_id(1)/8);
 	
-	// For each macro block a multipurpose array with size 288 bytes 
-	// is allocated. We need enough space for the nibbles when they
-	// are not packed yet (i.e. one nibble per byte), which sums
-	// to 2*96=192 bytes. At the same time we will need space for the
-	// packed result, which equals to 96 bytes. So in total 96+192=288
-	// bytes are needed. We use the same space to save intermediate
-	// floating point results. Since each float needs 4 byte of memory,
-	// we need 64*4=256 bytes for a macro block. We do not need this
-	// memory at the same as the other results and therefore the
-	// array suffices, since 256 < 288.
-	local uint8_t result_[4][288] __attribute__((aligned(16))); // result (96 bytes) + nibbles (192 bytes) = 288 bytes
-    local uint8_t *result = result_[lb];
+	// For each macro block a multipurpose array with size 256 bytes 
+	// is allocated, since we need enough space for the DCT phase, i.e. 64 floats.
+	local uint8_t result_[4][256] __attribute__((aligned(16))); // 
+    local uint8_t *result = result_[lb]; // result max 64 nibbles, i.e. 96 bytes < 256 bytes
     local int8_t *sresult = (local int8_t *)result;
-	local float *floatBuffer = (local float *)result; // 64 floats * 4 byte/float = 256 bytes < 288 bytes
-	local uint8_t *nibbles = &result[96]; // first 96 bytes are reserved for "packed" nibbles, while the remaining 192 bytes are for "unpacked" nibbles
+	local float *floatBuffer = (local float *)result; // 64 floats * 4 byte/float = 256 bytes
 	
-	//local uint64_t *zero_ends = (local uint64_t *result); // OR bitfield
-
-	// TODO: memory efficieny
-	// TODO: we have enogu space for them in a 128 byte array..
-	local uint8_t codeOffset_[4][2][64] __attribute__((aligned(16)));
-	local uint8_t *codeOffsetA = codeOffset_[lb][0];
-	local uint8_t *codeOffsetB = codeOffset_[lb][1];
-	
-	local int8_t zeroEnds_[4][2][64] __attribute__((aligned(16)));
-	local int8_t *zeroEndsA = zeroEnds_[lb][0];
-	local int8_t *zeroEndsB = zeroEnds_[lb][1];
-
+	// By letting "codeOffset" point somewhere else than "result" we can avoid a barrier.
+	local uint8_t *codeOffsetA = &result[96];
+	local uint8_t *codeOffsetB = &result[160];
+	local uint8_t *zeroEndsA = result;
+	local uint8_t *zeroEndsB = &result[64];
 
 	// Save one length per macroblock, instead of using a private variable.
 	local size_t lens[4] __attribute__((aligned(16)));
@@ -258,7 +242,7 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     global uint8_t *current = image + 8*blockY*columns + 8*blockX;
 	
 	if (get_global_id(0) == 0 && get_global_id(1) == 0)
-		printf("v13\n");
+		printf("v15\n");
 	barrier(0);
 	
 	const uint offsetX = self64 % 8;
@@ -282,21 +266,15 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
         dct(floatBuffer, sresult, self64, offsetX, offsetY);
 		barrier(CLK_LOCAL_MEM_FENCE);
 		
-		// sheet 6 (a)
-		// Every thread calculates up to three nibbles.
+		// Sheet 6: parallel entropy coding
+		// Every thread calculates up to three nibbles. Exception: If
+		// a thread is assigned the first item of a zero sequence, it 
+		// will encode the whole zero sequence. If there are more than
+		// 21 zeros, it will therefore encode more than 3 nibbles.
 		uint8_t nibbles[3];
-		//nibbles[0] = nibbles[1] = nibbles[2] = 0;
-		
-		
-		const int DEBUG_BLOCK = 4000;
-		if (!self64 && block_nr == DEBUG_BLOCK) {
-			printf("before\n");
-			for (int i = 0; i < 64; i++)
-				printf("i: %d, sresult: %d\n", i, sresult[i]);
-		}
 		
 		// Save a few values to private memory, because we will reuse the local
-		// buffer again to save zero sections start and end positions.
+		// buffer again to save the ends of zero sequences.
 		int8_t val = sresult[self64];
 		int8_t isFirstZero = 0, isLastZero = 0;
 		if (val == 0) {
@@ -304,54 +282,30 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 			isLastZero = self64 != 63 ? sresult[self64 + 1] : 1;
 		}
 		barrier(0);
-		
-		// zeroStarts has to be declared as signed to express -inf := -1
-		//zeroStartsA[self64] = isFirstZero ? self64 : -1;
 		zeroEndsA[self64] = isLastZero ? self64 : 64;
 		barrier(CLK_LOCAL_MEM_FENCE);
 		
-		if (!self64 && block_nr == DEBUG_BLOCK) {
-			printf("before min reduction\n");
-			for (int i = 0; i < 64; i++)
-				printf("i: %d, zeroEnds: %d\n", i, zeroEndsA[i]);
-		}
-		
-		// Perform max reduce to get start positions and min reduce to get end positions
+		// Reversed min reduce to get the end of zero sequences.
 		for (uint8_t d = 1; d < 64; d = d << 1) {
-			/*if (self64 >= d) {
-				zeroStartsB[self64] = max(zeroStartsA[self64 - d], zeroStartsA[self64]);
-			} else {
-				zeroStartsB[self64] = zeroStartsA[self64];
-			}*/
-			
-			// Reversed
 			if (self64 < 64 - d) {
 				zeroEndsB[self64] = min(zeroEndsA[self64 + d], zeroEndsA[self64]);
 			} else {
 				zeroEndsB[self64] = zeroEndsA[self64];
 			}
-			
-			// Swap both
-			/*local int8_t *temp = zeroStartsA;
-			zeroStartsA = zeroStartsB;
-			zeroStartsB = temp;*/
-			local int8_t *temp = zeroEndsA;
+			local uint8_t *temp = zeroEndsA;
 			zeroEndsA = zeroEndsB;
 			zeroEndsB = temp;
 			barrier(CLK_LOCAL_MEM_FENCE);
 		}
-		
-		if (!self64 && block_nr == DEBUG_BLOCK) {
-			printf("after min reduction\n");
-			for (int i = 0; i < 64; i++)
-				printf("i: %d, zeroEnds: %d\n", i, zeroEndsA[i]);
-		}
 	
-		uint8_t myNumNibbles = codeOffsetA[self64] = 0; // TODO: Be careful with overwriting zeroEndsA
+		uint8_t myNumNibbles;
 		uint8_t zerosToWrite = 0;
 		if (val == 0) {
 			if (isFirstZero) {
 				if (zeroEndsA[self64] != 63) {
+					// Instead of writing to the private nibbles array, we just save
+					// the length of the zero sequence that starts at this thread and
+					// convert that information later to nibbles.
 					zerosToWrite = zeroEndsA[self64] - self64 + 1;
 					myNumNibbles = codeOffsetA[self64] = (zerosToWrite + 6) / 7;
 				} else {
@@ -359,6 +313,10 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 					nibbles[0] = 0;
 					myNumNibbles = codeOffsetA[self64] = 1;
 				}
+			} else {
+				// Only the thread corresponding to the first item of a zero sequence
+				// encodes the number of zeros.
+				myNumNibbles = codeOffsetA[self64] = 0;
 			}
 		} else {
 			uint8_t absval = val < 0 ? -val : val;
@@ -377,15 +335,7 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 		}
 		barrier(CLK_LOCAL_MEM_FENCE);
 		
-		/*if (!self64 && block_nr == DEBUG_BLOCK) {
-			printf("before\n");
-			for (int i = 0; i < 64; i++)
-				printf("i: %d, codeOffsetA[i]: %u, sresult[i]: %d\n", i, codeOffsetA[i], sresult[i]);
-		}*/
-		barrier(0);
-		
 		// Calculate the prefix sums in parallel with the naive algorithm
-		// TODO: Double buffer
 		for (uint8_t d = 1; d < 64; d = d << 1) {
 			if (self64 >= d) {
 				codeOffsetB[self64] = codeOffsetA[self64 - d] + codeOffsetA[self64];
@@ -396,140 +346,41 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 			codeOffsetA = codeOffsetB;
 			codeOffsetB = temp;
 			barrier(CLK_LOCAL_MEM_FENCE);
-			
-			/*if (!self64 && block_nr == 0) {
-			printf("after %u\n", d);
-			for (int i = 0; i < 64; i++)
-				printf("i: %d, codeOffsetA[i]: %u\n", i, codeOffsetA[i]);
-			}*/
 		}
 		
-		/*if (!self64 && block_nr == DEBUG_BLOCK) {
-			printf("after\n");
-			for (int i = 0; i < 64; i++)
-				printf("i: %d, codeOffsetA[i]: %u\n", i, codeOffsetA[i]);
-		}*/
+		// Store the length of the compressed macro block
+		if (!self64) {
+			lens[lb] = (codeOffsetA[63] + 1) / 2;
+		}
+		// A barrier would have to be placed here, if we didn't let "codeOffset"
+		// point somewhere else in memory than "result".
 		
 		// Initialize all 96 values with 0s.
-		for (uint8_t i = self64; i < 96; i+=64)
+		for (uint8_t i = self64; i < 96; i += 64)
 			result[i] = 0;
 		barrier(CLK_LOCAL_MEM_FENCE);
 		
-		if (block_nr == DEBUG_BLOCK) {
-			for (int i = 0; i < myNumNibbles; i++) {
-				if (zerosToWrite) {
-					printf("self64: %u, zerosToWrite: %u\n", self64, zerosToWrite);
-				} else {
-					printf("self64: %u, nibbles: %x\n", self64, nibbles[i]);
-				}
-			}
-		}
-		barrier(0);
-		
+		// Pack nibbles into bytes.
+		// Define shifts for little endianess.
 		const uint8_t shifts[8] = {4, 0, 12, 8, 20, 16, 28, 24};
-		
 		uint8_t currentNibble = 0;
 		uint8_t myCodeOffset = self64 ? codeOffsetA[self64 - 1] : 0;
-		for (uint8_t i = myCodeOffset; i < myCodeOffset + /*3*/myNumNibbles; i++) {
+		for (uint8_t i = myCodeOffset; i < myCodeOffset + myNumNibbles; i++) {
 	
 			// Divide by 8, since there are 8 nibbles in a a 32-bit int.
 			local uint32_t *p = ((local uint32_t *)result) + (i >> 3);
-			
 			uint8_t nibble;
 			if (zerosToWrite) {
+				// We can encode only 7 zeros in a single nibble.
 				nibble = min(zerosToWrite - 7 * currentNibble, 7); 
 			} else {
 				nibble = nibbles[currentNibble];
 			}
-			
 			uint8_t shift = shifts[i % 8];
-			uint32_t shifted_nibble = ((uint32_t)nibble) << shift;
-			
-			/*if (block_nr == DEBUG_BLOCK)
-				printf("self64: %u, i: %u offset: %u shift: %u\n", self64, i, i >> 3, shift);*/
-		
-			// 0: shifted 28 bits, 1: shifted 24 bits, 2: shifted: 20 bits, ..
+			uint32_t shifted_nibble = ((uint32_t)nibble) << shift;		
 			atomic_or(p, shifted_nibble);
-			
-			
-			/*if (block_nr == DEBUG_BLOCK) {
-				printf("p: %08x, shifted: %08x, orig: %x, shift: %u\n", *p, shifted_nibble, nibbles[currentNibble], shift);
-			}*/
-			
 			currentNibble++;
-			
-			//barrier(CLK_LOCAL_MEM_FENCE);
 		}
-		if (!self64) {
-			lens[lb] = (codeOffsetA[63] + 1) / 2;
-			//printf("codeOffsetA[63]: %u, lens[lb]: %u\n", codeOffsetA[63], lens[lb]);
-		}
-		
-		barrier(CLK_LOCAL_MEM_FENCE);
-		if (!self64 && block_nr == DEBUG_BLOCK) {
-			for (int i = 0; i < 96; i++) {
-				printf("i: %u, result: %02x\n", i, result[i]);
-			}
-		}
-		
-		
-		
-		
-		//lens[lb] = 0; // TODO: correctly calculate a length
-		// TODO: How to barrier this loop? Probably not at all because atomic operation immediately write their changes..
-		
-		// TODO: Add a nibble if the number of nibbles is odd.
-		
-		
-        /*if (self64 == 0) {
-			// Walk through the values.
-			int zeros = 0, pos = 0;
-			for (int i=0; i<64; i++) {
-				int8_t val = sresult[i];
-				if (val == 0)
-					zeros++;
-				else {
-					// When we meet a non-zero value, we output an appropriate
-					// number of codes for the zeros preceding the current
-					// non-zero value.
-					uint8_t absval = val < 0 ? -val : val;
-					while (zeros > 0) {
-						int z = zeros > 7 ? 7 : zeros;
-						nibbles[pos++] = z;
-						zeros -= z;
-					}
-					nibbles[pos++] = first_nibble(val);
-					if (absval >= 19) {
-						uint8_t code = absval - 19;
-						nibbles[pos++] = code >> 4;
-						nibbles[pos++] = code & 0xF;
-					} else if (absval >= 3) {
-						nibbles[pos++] = absval - 3;
-					}
-				}
-			}
-
-			// When the sequence ends with zeros, terminate the
-			// sequence with 0x0.
-			if (zeros > 0)
-				nibbles[pos++] = 0;
-			
-			// Add a nibble 0x0 if the number of nibbles in the code
-			// is odd.
-			if ((pos & 1) != 0)
-				nibbles[pos++] = 0;
-			
-			// Save the number of bytes used.
-			lens[lb] = pos/2;
-		}
-		//
-		// Pack the nibbles into bytes. The first nibble of each
-		// pair of nibbles goes into the upper half of the byte.
-		// We copy from the back part (unpacked nibbles) to the
-		// the front part (packed nibbles).
-		barrier(CLK_LOCAL_MEM_FENCE);
-		for (int i=self64; i<lens[lb]; i+=64)
-			result[i] = (nibbles[2*i] << 4) | nibbles[2*i+1];*/
         break;
     }
     default:
