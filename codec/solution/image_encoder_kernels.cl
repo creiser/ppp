@@ -189,55 +189,6 @@ void dct(local float* floatBuffer, local int8_t* sresult, const uint self64, con
 	sresult[permut[self64]] = convert_char_rte(matrixProduct / quantization_factors[self64]);
 }
 
-
-#define BYTE_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c"
-#define BYTE_TO_BINARY(byte)  \
-  (byte & 0x80 ? '1' : '0'), \
-  (byte & 0x40 ? '1' : '0'), \
-  (byte & 0x20 ? '1' : '0'), \
-  (byte & 0x10 ? '1' : '0'), \
-  (byte & 0x08 ? '1' : '0'), \
-  (byte & 0x04 ? '1' : '0'), \
-  (byte & 0x02 ? '1' : '0'), \
-  (byte & 0x01 ? '1' : '0') 
-  
-
-#define INT_TO_BINARY_PATTERN "%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c%c"
-#define INT_TO_BINARY(byte)  \
-	(byte & 0x80000000 ? '1' : '0'), \
-	(byte & 0x40000000 ? '1' : '0'), \
-	(byte & 0x20000000 ? '1' : '0'), \
-	(byte & 0x10000000 ? '1' : '0'), \
-	(byte & 0x8000000 ? '1' : '0'), \
-	(byte & 0x4000000 ? '1' : '0'), \
-	(byte & 0x2000000 ? '1' : '0'), \
-	(byte & 0x1000000 ? '1' : '0'), \
-	(byte & 0x800000 ? '1' : '0'), \
-	(byte & 0x400000 ? '1' : '0'), \
-	(byte & 0x200000 ? '1' : '0'), \
-	(byte & 0x100000 ? '1' : '0'), \
-	(byte & 0x80000 ? '1' : '0'), \
-	(byte & 0x40000 ? '1' : '0'), \
-	(byte & 0x20000 ? '1' : '0'), \
-	(byte & 0x10000 ? '1' : '0'), \
-	(byte & 0x8000 ? '1' : '0'), \
-	(byte & 0x4000 ? '1' : '0'), \
-	(byte & 0x2000 ? '1' : '0'), \
-	(byte & 0x1000 ? '1' : '0'), \
-	(byte & 0x800 ? '1' : '0'), \
-	(byte & 0x400 ? '1' : '0'), \
-	(byte & 0x200 ? '1' : '0'), \
-	(byte & 0x100 ? '1' : '0'), \
-	(byte & 0x80 ? '1' : '0'), \
-	(byte & 0x40 ? '1' : '0'), \
-	(byte & 0x20 ? '1' : '0'), \
-	(byte & 0x10 ? '1' : '0'), \
-	(byte & 0x8 ? '1' : '0'), \
-	(byte & 0x4 ? '1' : '0'), \
-	(byte & 0x2 ? '1' : '0'), \
-	(byte & 0x1 ? '1' : '0')
-
-
 /*
  * Encode 4 macro blocks with 8x8 pixels in each work group.
  * Each thread computes its macro block's x and y coordinate
@@ -282,12 +233,19 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
     local uint8_t *result = result_[lb];
     local int8_t *sresult = (local int8_t *)result;
 	local float *floatBuffer = (local float *)result; // 64 floats * 4 byte/float = 256 bytes < 288 bytes
-	local uint8_t *nibbles = &result[96]; // first 96 bytes are reserved for "packed" nibbles, while the remaining 192 bytes are for "unpacked" nibbles 
+	local uint8_t *nibbles = &result[96]; // first 96 bytes are reserved for "packed" nibbles, while the remaining 192 bytes are for "unpacked" nibbles
+	
+	//local uint64_t *zero_ends = (local uint64_t *result); // OR bitfield
 
 	// TODO: memory efficieny
+	// TODO: we have enogu space for them in a 128 byte array..
 	local uint8_t codeOffset_[4][2][64] __attribute__((aligned(16)));
 	local uint8_t *codeOffsetA = codeOffset_[lb][0];
 	local uint8_t *codeOffsetB = codeOffset_[lb][1];
+	
+	local int8_t zeroEnds_[4][2][64] __attribute__((aligned(16)));
+	local int8_t *zeroEndsA = zeroEnds_[lb][0];
+	local int8_t *zeroEndsB = zeroEnds_[lb][1];
 
 
 	// Save one length per macroblock, instead of using a private variable.
@@ -327,16 +285,81 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 		// sheet 6 (a)
 		// Every thread calculates up to three nibbles.
 		uint8_t nibbles[3];
-		uint8_t myNumNibbles;
 		//nibbles[0] = nibbles[1] = nibbles[2] = 0;
 		
 		
-		codeOffsetA[self64] = 42;
+		const int DEBUG_BLOCK = 4000;
+		if (!self64 && block_nr == DEBUG_BLOCK) {
+			printf("before\n");
+			for (int i = 0; i < 64; i++)
+				printf("i: %d, sresult: %d\n", i, sresult[i]);
+		}
 		
+		// Save a few values to private memory, because we will reuse the local
+		// buffer again to save zero sections start and end positions.
 		int8_t val = sresult[self64];
+		int8_t isFirstZero = 0, isLastZero = 0;
 		if (val == 0) {
-			nibbles[0] = 1;
-			myNumNibbles = codeOffsetA[self64] = 1;
+			isFirstZero = self64 ? sresult[self64 - 1] : 1;
+			isLastZero = self64 != 63 ? sresult[self64 + 1] : 1;
+		}
+		barrier(0);
+		
+		// zeroStarts has to be declared as signed to express -inf := -1
+		//zeroStartsA[self64] = isFirstZero ? self64 : -1;
+		zeroEndsA[self64] = isLastZero ? self64 : 64;
+		barrier(CLK_LOCAL_MEM_FENCE);
+		
+		if (!self64 && block_nr == DEBUG_BLOCK) {
+			printf("before min reduction\n");
+			for (int i = 0; i < 64; i++)
+				printf("i: %d, zeroEnds: %d\n", i, zeroEndsA[i]);
+		}
+		
+		// Perform max reduce to get start positions and min reduce to get end positions
+		for (uint8_t d = 1; d < 64; d = d << 1) {
+			/*if (self64 >= d) {
+				zeroStartsB[self64] = max(zeroStartsA[self64 - d], zeroStartsA[self64]);
+			} else {
+				zeroStartsB[self64] = zeroStartsA[self64];
+			}*/
+			
+			// Reversed
+			if (self64 < 64 - d) {
+				zeroEndsB[self64] = min(zeroEndsA[self64 + d], zeroEndsA[self64]);
+			} else {
+				zeroEndsB[self64] = zeroEndsA[self64];
+			}
+			
+			// Swap both
+			/*local int8_t *temp = zeroStartsA;
+			zeroStartsA = zeroStartsB;
+			zeroStartsB = temp;*/
+			local int8_t *temp = zeroEndsA;
+			zeroEndsA = zeroEndsB;
+			zeroEndsB = temp;
+			barrier(CLK_LOCAL_MEM_FENCE);
+		}
+		
+		if (!self64 && block_nr == DEBUG_BLOCK) {
+			printf("after min reduction\n");
+			for (int i = 0; i < 64; i++)
+				printf("i: %d, zeroEnds: %d\n", i, zeroEndsA[i]);
+		}
+	
+		uint8_t myNumNibbles = codeOffsetA[self64] = 0; // TODO: Be careful with overwriting zeroEndsA
+		uint8_t zerosToWrite = 0;
+		if (val == 0) {
+			if (isFirstZero) {
+				if (zeroEndsA[self64] != 63) {
+					zerosToWrite = zeroEndsA[self64] - self64 + 1;
+					myNumNibbles = codeOffsetA[self64] = (zerosToWrite + 6) / 7;
+				} else {
+					// Write a terminating zero nibble.
+					nibbles[0] = 0;
+					myNumNibbles = codeOffsetA[self64] = 1;
+				}
+			}
 		} else {
 			uint8_t absval = val < 0 ? -val : val;
 			nibbles[0] = first_nibble(val);
@@ -354,7 +377,6 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 		}
 		barrier(CLK_LOCAL_MEM_FENCE);
 		
-		const int DEBUG_BLOCK = 4000;
 		/*if (!self64 && block_nr == DEBUG_BLOCK) {
 			printf("before\n");
 			for (int i = 0; i < 64; i++)
@@ -395,7 +417,11 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 		
 		if (block_nr == DEBUG_BLOCK) {
 			for (int i = 0; i < myNumNibbles; i++) {
-				printf("self64: %u, nibbles: %x\n", self64, nibbles[i]);
+				if (zerosToWrite) {
+					printf("self64: %u, zerosToWrite: %u\n", self64, zerosToWrite);
+				} else {
+					printf("self64: %u, nibbles: %x\n", self64, nibbles[i]);
+				}
 			}
 		}
 		barrier(0);
@@ -409,8 +435,15 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 			// Divide by 8, since there are 8 nibbles in a a 32-bit int.
 			local uint32_t *p = ((local uint32_t *)result) + (i >> 3);
 			
+			uint8_t nibble;
+			if (zerosToWrite) {
+				nibble = min(zerosToWrite - 7 * currentNibble, 7); 
+			} else {
+				nibble = nibbles[currentNibble];
+			}
+			
 			uint8_t shift = shifts[i % 8];
-			uint32_t shifted_nibble = ((uint32_t)nibbles[currentNibble]) << shift;
+			uint32_t shifted_nibble = ((uint32_t)nibble) << shift;
 			
 			/*if (block_nr == DEBUG_BLOCK)
 				printf("self64: %u, i: %u offset: %u shift: %u\n", self64, i, i >> 3, shift);*/
