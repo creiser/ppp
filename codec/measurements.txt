@@ -1,0 +1,5 @@
+Laufzeitmessungen DCT auf Rechner ...:
+
+                            Laufzeit
+Sequentielle CPU Variante   s
+Parallele GPU Variante      s
