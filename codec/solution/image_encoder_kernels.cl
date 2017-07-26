@@ -249,19 +249,19 @@ kernel void encode_frame(global uint8_t *image, int rows, int columns,
 	const uint offsetY = self64 / 8;
 	
     switch(format) {
-    case 0: {  // Exercise (a)
+    case 0: {
         // Reorder block directly to the output location
 		sresult[self64] = get_block(current, columns, offsetX, offsetY);
         lens[lb] = 64;
         break;
     }
-    case 1: {  // Exercise (b)
+    case 1: {
 		floatBuffer[self64] = get_block(current, columns, offsetX, offsetY);
         dct(floatBuffer, sresult, self64, offsetX, offsetY);
 		lens[lb] = 64;
         break;
     }
-    case 2: {  // Exercise (c)
+    case 2: {  // Exercise (a/b)
 		floatBuffer[self64] = get_block(current, columns, offsetX, offsetY);
         dct(floatBuffer, sresult, self64, offsetX, offsetY);
 		barrier(CLK_LOCAL_MEM_FENCE);
